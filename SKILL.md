@@ -1,0 +1,151 @@
+---
+name: engine-moisture-analysis
+description: >
+  Compute internal-moisture and camshaft-corrosion exposure for a stored piston
+  aircraft engine from temperature/humidity sensor data (e.g. an X-Sense logger in
+  the cowl). Use this whenever the user wants to analyze engine-bay temp/RH logs,
+  estimate condensation or time-of-wetness on the cam/lifters, detect condensation
+  events, track moisture exposure since the last flight, decide whether storage
+  corrosion is a concern, or power a live monitor/alert. Trigger on mentions of
+  cam/camshaft corrosion, condensation in a crankcase, dew point on engine metal,
+  time-of-wetness, hangar humidity, engine preservation/dehydrator/desiccant
+  breather decisions, or "should I fly to dry the engine out" — even if the user
+  doesn't name the model explicitly. Produces a deterministic JSON summary, charts,
+  and (optionally) a report; the same model backs both on-demand analysis and the
+  live alerting Worker.
+---
+
+# Engine internal-moisture / cam-corrosion exposure
+
+This skill is the **single deterministic source of truth** for turning engine-bay
+temperature and humidity readings into camshaft corrosion-exposure numbers. There is
+no language model in the calculation — every figure is physics. The same
+`scripts/model.py` is meant to be imported by a live monitoring backend (a scheduled
+Cloudflare Worker that alerts via Telegram) and run on-demand here for deep analysis
+and reports. Keep the model as the one reviewed implementation both consume.
+
+Read `references/METHODOLOGY.md` before changing any constant or explaining a result —
+it documents the two-inertia model and why each assumption holds.
+
+## The model in one paragraph
+
+Corrosion is driven by **time-of-wetness**, not grams of water. The cam/lifter steel
+lags air temperature (metal thermal inertia, `tau_metal` ≈ 8 h). Crucially, the
+crankcase only breathes through restricted paths (breather tube, tortuous exhaust,
+plugged/filtered intake), so interior humidity is a heavily lagged version of ambient
+(**air-exchange inertia, `tau_air` ≈ 1 day–1 week**) — this is what makes transient
+humid spells largely harmless. Condensation occurs when interior vapour pressure
+exceeds saturation at the metal temperature. A film mass-balance adds the post-event
+drying tail. Each hot run resets the clock and refreshes the oil's inhibitor film.
+
+## How to use it
+
+### 1. Analyze a sensor export (most common)
+
+```bash
+python scripts/model.py /path/to/xsense_export.csv --tau-air-h 24 --json
+```
+
+The CSV needs three columns (names are matched loosely): a time column, temperature
+in °F, and relative humidity in %. Output is a JSON summary with sub-dew-point hours
+(**realistic** and **upper-bound**), film-hours, an honest condensed-mass figure,
+flight detection, episodes, and exposure **since the last flight**.
+
+Always report **two numbers**: the realistic figure (interior air lag applied) and
+the upper bound (`tau_air = 0`). The gap between them is the protection the restricted
+breathing provides — present it, don't hide it.
+
+### 2. Programmatic / from live readings
+
+```python
+from scripts.model import from_records, regrid, analyze, episodes, since_last_flight, Params
+g = regrid(from_records(readings))         # readings: [{"time":..., "tf":..., "rh":...}, ...]
+res, series = analyze(g, Params(tau_air_s=24*3600))
+res["episodes"] = episodes(series)
+res["since_last_flight"] = since_last_flight(series, res)
+```
+
+### 3. Charts (for a report or a Telegram attachment)
+
+```python
+from scripts.charts import event_chart, seasonal_chart, dewpoint_divergence_chart
+event_chart(series, center_time="2026-03-16T12:00", out="event.png")
+seasonal_chart(series, out="seasonal.png")
+dewpoint_divergence_chart(series, center_time="2026-03-16T12:00", out="divergence.png")
+```
+
+`dewpoint_divergence_chart` is the one to attach to an alert: it visually shows the
+exterior humidity spiking while the lagged interior never reaches the cold cam.
+
+### 4. Full written report
+
+For a polished deliverable, generate the three charts, then assemble an HTML report
+(steel-and-rust palette) and render to PDF with headless Chromium (embed fonts so it
+is self-contained). Lead with the realistic/upper-bound pair, the seasonal profile,
+the per-event persistence table, and the oil-reservoir caveat.
+
+## Honesty rules for any alert or summary copy
+
+These protect the tool's credibility — a nag-bot that cries wolf gets muted.
+
+- **Lead with wet-hours / film-hours, not water mass.** The realistic condensed mass
+  is grams or less; never state ounces. "Your cam has logged ~6 damp-hours since you
+  last flew" is credible; "breathed in half an ounce of water" is not.
+- **Drive the social nudge off the ambient-damp index + days-since-flight**, and keep
+  any moisture claim honestly small. The point is "it's been humid and you haven't
+  flown — go fly," not a false corrosion scare.
+- **Frame any weather/VFR suggestion as advisory flavor**, never a substitute for a
+  real preflight weather briefing.
+- **Surface the oil caveat when relevant**: ambient analysis can't see water dissolved
+  in the oil; flying to temperature is what manages that.
+
+## Sensor gap-fill fallback (feed drops)
+
+If the cowl sensor drops out (e.g. lost connectivity through a humid spell), do NOT
+feed raw nearest-station METAR into the model — the hangar/cowl buffers the outside
+air, so raw METAR overstates swings and over-alerts. Instead use `scripts/gapfill.py`:
+
+1. **Once**, fit the station→cowl transfer function on overlapping history
+   (`fit_transfer` / `backtest`). The fitted params ARE the hangar's behavior: thermal
+   lag (h), amplitude damping (<1 = sheltered), a **solar-gain term** (south-facing
+   metal doors → warmer than ambient on clear days, the greenhouse effect), a
+   **radiative-cooling term** (clear-night cooling, expect negative), moisture lag, and
+   out-of-sample reconstruction RMSE. Sky cover is taken from observed ASOS codes and
+   solar elevation is computed from lat/lon — both modulate the radiative terms.
+2. **During a gap**, push live station METAR through that transfer (`synthesize_cowl`)
+   to produce a buffered cowl estimate, mark those minutes `estimated=True`, and treat
+   the resulting exposure as lower-confidence (widen alert thresholds or annotate).
+
+```bash
+# estimator sanity check (no internet needed):
+python scripts/gapfill.py export.csv
+```
+
+**If Claude can't download the ASOS data directly** (sandboxed/blocked network),
+do NOT give up — offer the user the exact link to download it themselves:
+
+1. Build the precise URL for their station and chosen period:
+   ```python
+   from scripts.gapfill import mesonet_url
+   mesonet_url("KMRB", "2025-06-04", "2026-06-04")   # ICAO or 3-char id both fine
+   ```
+   `fetch_metar_archive()` already raises `MetarDownloadBlocked` carrying this URL on
+   any network failure — surface that URL to the user verbatim.
+2. Tell the user to open it in a browser (it returns a comma CSV) and provide the file.
+3. Load it and proceed with the fit:
+   ```python
+   from scripts.gapfill import load_metar_csv, fit_transfer, backtest
+   metar = load_metar_csv("/path/to/downloaded.csv")
+   print(backtest(cowl, metar)["oos"])      # out-of-sample fit quality
+   ```
+
+The real fit needs historical ASOS; sources are documented at the top of
+`gapfill.py` (Iowa Mesonet archive for the fit, aviationweather.gov for live METAR).
+
+## Files
+
+- `scripts/model.py` — deterministic core (psychrometrics, dual inertia, film budget,
+  flight detection, since-last-flight, combustion estimate). Import it; don't reimplement.
+- `scripts/charts.py` — event, seasonal, and dew-point-divergence charts.
+- `scripts/gapfill.py` — station→cowl transfer fit, backtest, and gap synthesis.
+- `references/METHODOLOGY.md` — derivation, constants, caveats. Read before editing.
