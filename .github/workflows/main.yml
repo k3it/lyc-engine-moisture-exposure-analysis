@@ -1,0 +1,78 @@
+name: Build and Test .skill Package
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*' # Still supports official releases on tags
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch: # Allows manual triggering from the UI
+
+permissions:
+  contents: write
+
+jobs:
+  build-package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate SKILL.md Existence
+        run: |
+          if [ ! -f "SKILL.md" ]; then
+            echo "::error::SKILL.md not found in the root of the repository!"
+            exit 1
+          fi
+
+      - name: Determine Package Name
+        id: info
+        run: |
+          REPO_NAME=$(echo "${{ github.repository }}" | cut -d'/' -f2)
+          VERSION=${GITHUB_REF_NAME:-latest}
+          echo "PACKAGE_NAME=${REPO_NAME}" >> $GITHUB_OUTPUT
+          echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Create .skill Package
+        run: |
+          PACKAGE_FILE="${{ steps.info.outputs.PACKAGE_NAME }}.skill"
+          echo "Packaging Agent Skill into $PACKAGE_FILE..."
+          
+          FILES_TO_ZIP="SKILL.md"
+          for dir in scripts references assets; do
+            if [ -d "$dir" ]; then
+              FILES_TO_ZIP="$FILES_TO_ZIP $dir"
+            fi
+          done
+          
+          zip -r "$PACKAGE_FILE" $FILES_TO_ZIP
+
+      # Step A: Always upload the .skill file as an artifact for verification on PRs/Commits
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.info.outputs.PACKAGE_NAME }}-skill
+          path: ${{ steps.info.outputs.PACKAGE_NAME }}.skill
+          retention-days: 7
+
+      # Step B: Only create a formal GitHub Release if this run was triggered by a Version Tag
+      - name: Generate Release Notes
+        if: startsWith(github.ref, 'refs/tags/')
+        id: release_notes
+        run: |
+          echo "### Lyc Engine Moisture Exposure Analysis - Agent Skill Release" > release_notes.md
+          echo "Automated bundle for version \`${{ steps.info.outputs.VERSION }}\`." >> release_notes.md
+          echo "To use this skill, import the attached \`${{ steps.info.outputs.PACKAGE_NAME }}.skill\` file into your AI Agent platform." >> release_notes.md
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release_notes.md
+          files: |
+            ${{ steps.info.outputs.PACKAGE_NAME }}.skill
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
