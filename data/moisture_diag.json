@@ -1,0 +1,13 @@
+{
+  "n_near_sat": 1272,
+  "pct": 2.5,
+  "rh_resid_mean": -5.4,
+  "rh_resid_std": 6.0,
+  "dewpt_resid_mean": 0.43,
+  "rh_resid_overall": 0.2,
+  "dewpt_rmse": 1.92,
+  "rh_rmse": 7.7,
+  "day_dres": -0.32,
+  "night_dres": 0.3,
+  "corr_dres_cloud": 0.15
+}

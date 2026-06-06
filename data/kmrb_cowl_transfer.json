@@ -1,0 +1,59 @@
+{
+  "summary": {
+    "thermal_lag_h": 6,
+    "thermal_damping": 0.899,
+    "solar_gain_C": 4.3,
+    "radiative_cool_C": 0.11,
+    "temp_rmse_C": 2.88,
+    "temp_r2": 0.91,
+    "cloud_used": true,
+    "moisture_lag_h": 1.5,
+    "moisture_damping": 0.972,
+    "dewpt_rmse_C": 1.92
+  },
+  "oos": {
+    "n": 15333,
+    "temp_rmse_C": 3.05,
+    "rh_rmse_pct": 8.5,
+    "temp_bias_C": 1.38,
+    "rh_bias_pct": -5.1
+  },
+  "temperature": {
+    "tau_h": 6,
+    "coef": [
+      0.8993383158925747,
+      4.303797606937248,
+      0.11202298101024782,
+      3.2192882729954286
+    ],
+    "rmse": 2.881909795871616,
+    "r2": 0.9103685402966355,
+    "has_cloud": true
+  },
+  "moisture": {
+    "tau_h": 1.5,
+    "coef": [
+      0.9721602909290935,
+      0.26235376715886605
+    ],
+    "rmse": 1.9157188317046105,
+    "r2": 0.9695145247137356
+  },
+  "grid": "10min",
+  "n": 50428,
+  "lat": 39.4,
+  "lon": -77.98,
+  "engine_mask": {
+    "flight_temp_c": 40.0,
+    "cooldown_h": 4.0,
+    "masked_samples": 6363
+  },
+  "coverage": {
+    "cowl_span_days": 365.0,
+    "cowl_samples": 520721,
+    "metar_obs": 10427,
+    "metar_median_interval_min": 60.0,
+    "metar_gaps_over_3h": 24,
+    "metar_max_gap_h": 50.0
+  }
+}

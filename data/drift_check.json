@@ -1,0 +1,25 @@
+{
+  "split_at": "2025-12-03 18:41:30",
+  "first_half": {
+    "thermal_lag_h": 6,
+    "thermal_damping": 0.861,
+    "solar_gain_C": 4.44,
+    "radiative_cool_C": 0.25,
+    "temp_rmse_C": 2.06,
+    "temp_r2": 0.915,
+    "moisture_lag_h": 2,
+    "moisture_damping": 0.99,
+    "dewpt_rmse_C": 0.93
+  },
+  "second_half": {
+    "thermal_lag_h": 6,
+    "thermal_damping": 0.827,
+    "solar_gain_C": 4.34,
+    "radiative_cool_C": -0.05,
+    "temp_rmse_C": 3.27,
+    "temp_r2": 0.852,
+    "moisture_lag_h": 1.5,
+    "moisture_damping": 0.941,
+    "dewpt_rmse_C": 2.52
+  }
+}
