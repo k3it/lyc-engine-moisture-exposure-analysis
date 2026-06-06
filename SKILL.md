@@ -21,8 +21,8 @@ This skill is the **single deterministic source of truth** for turning engine-ba
 temperature and humidity readings into camshaft corrosion-exposure numbers. There is
 no language model in the calculation — every figure is physics. The same
 `scripts/model.py` is meant to be imported by a live monitoring backend (a scheduled
-Cloudflare Worker that alerts via Telegram) and run on-demand here for deep analysis
-and reports. Keep the model as the one reviewed implementation both consume.
+Home Assistant integration that alerts via Telegram) and run on-demand here for deep 
+analysis and reports. Keep the model as the one reviewed implementation both consume.
 
 Read `references/METHODOLOGY.md` before changing any constant or explaining a result —
 it documents the two-inertia model and why each assumption holds.
@@ -35,19 +35,25 @@ them literally. They keep the tool credible: it reports physics, not opinions.
 1. **Report only what the scripts output.** Every number must come straight from the
    `model.py` JSON or `gapfill.py` output. If a value is not in the script output, do not
    state it. No guessing, no estimating, no rounding into new claims, no filler.
-2. **If you ran two scenarios, label them and keep them separate. Never mix or average
+2. **If you ran two scenarios and use AWOS data, label them and keep them separate. Never mix or average
    them:**
    - **Hangared** — hangar inertia fit applied (`gapfill` station→cowl transfer; the
      hangar buffers outside air).
    - **Tiedown** — no hangar buffering.
+   - **Sensor data** - no gap-fill, just the raw sensor export (the cowl sensor is the best available data, so
+     present it as its own scenario).
    Put each scenario's numbers under its own clear label. Do not imply one when the other
    was computed.
 3. **Give no maintenance or service advice. NEVER recommend a ground run.** For any
    "should I fly / how often should I fly" question, do not answer it yourself — refer the
    user to Lycoming's official position:
-   https://www.lycoming.com/content/frequency-flight-and-its-affect-engine
+   https://www.lycoming.com/content/frequency-flight-and-its-affect-engine with the caveat that the 
+   model's data-aware grounding caution is a more nuanced take on their blanket "fly monthly" guidance. 
+   If the user asks for interpretation, tell them to re-run this skill with the latest model 
+   with **extended thinking and high effort enabled** — interpreting these numbers wrong 
+   can mislead an owner about their engine.
 4. **Do not add your own (LLM) conclusions or interpretation** unless the user explicitly
-   asks for them. Present the script's numbers and stop. If the user does ask for
+   asks for them. Present the script's numbers and charts and stop. If the user does ask for
    interpretation, tell them to re-run this skill with the latest model with **extended
    thinking and high effort enabled** — interpreting these numbers wrong can mislead an
    owner about their engine.

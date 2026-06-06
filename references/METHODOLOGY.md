@@ -5,11 +5,10 @@ explain a result, justify a constant, change an assumption, or defend the model.
 
 ## What we are estimating
 
-Corrosion of a stored piston aero-engine camshaft and lifters is driven by
-**time-of-wetness** — how long the steel holds a liquid film — not by the total
-grams of water. The model converts a stream of `(time, temperature, RH)` readings
-from a sensor in the engine bay into the hours the cam spends wet, plus an honest
-(small) condensed-mass figure.
+Corrosion of a stored piston aero-engine camshaft and lifters and other internal components 
+is driven by **time-of-wetness** — how long the steel holds a liquid film — not by the total
+grams of water. The model converts a stream of `(time, temperature, RH)` readings from a sensor 
+in the engine bay into the hours the cam spends wet, plus an honest (small) condensed-mass figure.
 
 ## Two inertias — both matter
 

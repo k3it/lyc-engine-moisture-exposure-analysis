@@ -10,9 +10,9 @@ to go fly when it's been damp.
 
 ## Why time-of-wetness, not "grams of water"
 
-Corrosion is driven by how long the cam/lifter steel holds a liquid film, not by the
-total mass of water. The model computes that from the measured air, accounting for two
-inertias that a naive dew-point comparison misses:
+Corrosion is driven by how long the cam/lifter steel holds a liquid film. 
+The model computes that from the measured air, accounting for two
+inertias that a naive dew-point comparison would miss:
 
 1. **Metal thermal inertia** (`tau_metal` ≈ 8 h) — the buried cam lags air temperature.
 2. **Air-exchange inertia — two parallel paths.** The crankcase only breathes through
@@ -28,7 +28,8 @@ A film mass-balance adds the post-event **drying tail**, with **asymmetric dryin
 (`dry_factor` ≈ 0.3): water that drains toward the immiscible, denser oil re-evaporates
 far slower than it condensed. Each hot run resets the exposure clock and refreshes the
 oil's corrosion-inhibitor film; a **conditional grounding caution** flags a month on the
-ground only when it followed real wetting (improving on Lycoming's blanket "fly monthly").
+ground only when it followed real wetting (improving on Lycoming's blanket "fly often, every 
+week, month" in any geography).
 
 See [`references/METHODOLOGY.md`](references/METHODOLOGY.md) for the full derivation,
 constants, and caveats (including the oil-borne moisture reservoir the bay sensor can't
