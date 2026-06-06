@@ -40,6 +40,10 @@ class EngineMoistureCoordinator(DataUpdateCoordinator):
     """Coordinates a periodic moisture-model cycle for one config entry."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry, scripts_dir: str) -> None:
+        # _build_cfg() (below) needs self.hass/self.entry, but DataUpdateCoordinator
+        # only sets self.hass in its __init__ — which we can't call first because it
+        # needs the update_interval that _build_cfg computes. Set them up front.
+        self.hass = hass
         self.entry = entry
         self.scripts_dir = scripts_dir
         self._store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}")
