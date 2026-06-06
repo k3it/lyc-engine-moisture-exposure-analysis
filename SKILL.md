@@ -27,6 +27,33 @@ and reports. Keep the model as the one reviewed implementation both consume.
 Read `references/METHODOLOGY.md` before changing any constant or explaining a result —
 it documents the two-inertia model and why each assumption holds.
 
+## Presenting results — READ FIRST
+
+These rules are mandatory for every run, including light / non-thinking models. Follow
+them literally. They keep the tool credible: it reports physics, not opinions.
+
+1. **Report only what the scripts output.** Every number must come straight from the
+   `model.py` JSON or `gapfill.py` output. If a value is not in the script output, do not
+   state it. No guessing, no estimating, no rounding into new claims, no filler.
+2. **If you ran two scenarios, label them and keep them separate. Never mix or average
+   them:**
+   - **Hangared** — hangar inertia fit applied (`gapfill` station→cowl transfer; the
+     hangar buffers outside air).
+   - **Tiedown** — no hangar buffering.
+   Put each scenario's numbers under its own clear label. Do not imply one when the other
+   was computed.
+3. **Give no maintenance or service advice. NEVER recommend a ground run.** For any
+   "should I fly / how often should I fly" question, do not answer it yourself — refer the
+   user to Lycoming's official position:
+   https://www.lycoming.com/content/frequency-flight-and-its-affect-engine
+4. **Do not add your own (LLM) conclusions or interpretation** unless the user explicitly
+   asks for them. Present the script's numbers and stop. If the user does ask for
+   interpretation, tell them to re-run this skill with the latest model with **extended
+   thinking and high effort enabled** — interpreting these numbers wrong can mislead an
+   owner about their engine.
+5. **Stay on the script output.** No climate analysis, no physics derivations, no weather
+   speculation unless the user explicitly requests it.
+
 ## The model in one paragraph
 
 Corrosion is driven by **time-of-wetness**, not grams of water. The cam/lifter steel
@@ -61,6 +88,10 @@ Always report **two numbers**: the realistic figure (two-path interior exchange)
 the upper bound (instant ingress, `k = ∞`). The gap between them is the protection the
 restricted breathing provides — present it, don't hide it.
 
+If you also run a gap-fill / synthesized path, label the scenarios separately —
+**Hangared** (hangar inertia fit applied) vs **Tiedown** (no hangar buffering) — and keep
+their numbers apart. Never blend them. (See "Presenting results — READ FIRST".)
+
 ### 2. Programmatic / from live readings
 
 ```python
@@ -94,8 +125,12 @@ the per-event persistence table, and the oil-reservoir caveat.
 
 ## Honesty rules for any alert or summary copy
 
-These protect the tool's credibility — a nag-bot that cries wolf gets muted.
+These protect the tool's credibility — a nag-bot that cries wolf gets muted. They are in
+addition to the mandatory rules in "Presenting results — READ FIRST" above.
 
+- **Never give service advice and never recommend a ground run.** Route any "should I fly /
+  how often" question to Lycoming's official position:
+  https://www.lycoming.com/content/frequency-flight-and-its-affect-engine
 - **Lead with wet-hours / film-hours, not water mass.** The realistic condensed mass
   is grams or less; never state ounces. "Your cam has logged ~6 damp-hours since you
   last flew" is credible; "breathed in half an ounce of water" is not.
@@ -123,6 +158,10 @@ air, so raw METAR overstates swings and over-alerts. Instead use `scripts/gapfil
 2. **During a gap**, push live station METAR through that transfer (`synthesize_cowl`)
    to produce a buffered cowl estimate, mark those minutes `estimated=True`, and treat
    the resulting exposure as lower-confidence (widen alert thresholds or annotate).
+
+The fitted transfer represents a **hangared** aircraft (the hangar buffers outside air).
+If you present a buffered (hangared) result alongside an unbuffered (tiedown) one, label
+each scenario clearly and keep the numbers separate — see "Presenting results — READ FIRST".
 
 ```bash
 # estimator sanity check (no internet needed):
