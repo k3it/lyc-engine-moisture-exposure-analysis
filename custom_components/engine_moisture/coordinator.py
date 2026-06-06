@@ -264,7 +264,12 @@ class EngineMoistureCoordinator(DataUpdateCoordinator):
     async def _predict_window(self, cfg, weather_info) -> str:
         """Gemini predicts ONLY the next flying window; deterministic fallback otherwise."""
         import pipeline as pl
-        prompt = pl.build_window_prompt(weather_info, cfg[CONF_AIRPORT])
+        custom = (cfg.get("window_prompt") or "").strip()
+        if custom:
+            brief = weather_info.get("forecast_brief") or weather_info.get("summary") or ""
+            prompt = custom.replace("{icao}", str(cfg[CONF_AIRPORT])) + "\n\nForecast:\n" + str(brief)
+        else:
+            prompt = pl.build_window_prompt(weather_info, cfg[CONF_AIRPORT])
         domain, _, service = str(cfg["ai_task_service"]).partition("/")
         service = service or "generate_data"
         try:

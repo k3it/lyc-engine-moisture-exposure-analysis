@@ -94,6 +94,8 @@ def _options_schema(current: dict[str, Any]) -> vol.Schema:
         vol.Optional("ai_task_entity", default=d("ai_task_entity")): selector.TextSelector(),
         vol.Optional("www_dir", default=d("www_dir")): selector.TextSelector(),
         vol.Optional("backfill_csv_glob", default=d("backfill_csv_glob")): selector.TextSelector(),
+        vol.Optional("window_prompt", default=d("window_prompt")): selector.TextSelector(
+            selector.TextSelectorConfig(multiline=True)),
     })
 
 

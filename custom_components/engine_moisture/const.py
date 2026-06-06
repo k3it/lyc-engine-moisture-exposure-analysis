@@ -63,6 +63,8 @@ OPTION_DEFAULTS = {
     CONF_QUIET_START: 22,
     CONF_QUIET_END: 7,
     "chart_history_days": 75,
+    # LLM flying-window prompt; blank = use the built-in default. {icao} is substituted.
+    "window_prompt": "",
     # notification plumbing
     "telegram_target": "",
     "ai_task_entity": "ai_task.google_ai_task",

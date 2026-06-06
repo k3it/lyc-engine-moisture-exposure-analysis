@@ -51,7 +51,8 @@
           "telegram_target": "Telegram chat id (blank = broadcast)",
           "ai_task_entity": "AI Task entity (flying-window text)",
           "www_dir": "Chart output directory",
-          "backfill_csv_glob": "Backfill CSV glob (optional)"
+          "backfill_csv_glob": "Backfill CSV glob (optional)",
+          "window_prompt": "LLM flying-window prompt (blank = built-in; {icao} is substituted)"
         }
       }
     }

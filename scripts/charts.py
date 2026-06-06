@@ -156,7 +156,8 @@ def summary_chart(series, res, out, margin_c=2.0, history_days=75, days=None):
     glf = (sl["Td_int"] - sl["Tm"])
     sub_h = round(float((glf > 0).sum()) / 60, 1)
     close_h = round(float(((glf > -margin_c) & (glf <= 0)).sum()) / 60, 1)
-    _header(fig, "Cam moisture — last %d days" % int(win) if win else "Cam moisture",
+    span_days = max(1, int(round((t[-1] - t[0]).total_seconds() / 86400))) if len(t) else 0
+    _header(fig, f"Cam moisture — last {span_days} days",
             f"Since last flight: {slf.get('days')} d  ·  {sub_h} h at/below dew point  ·  "
             f"{close_h} h within {m} °C  ·  {len(f_ts)} flights shown")
     plt.tight_layout(rect=[0, 0, 1, 0.86]); plt.savefig(out, dpi=160); plt.close()
