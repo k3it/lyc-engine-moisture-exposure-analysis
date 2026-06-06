@@ -112,8 +112,8 @@ class EngineMoistureConfigFlow(ConfigFlow, domain=DOMAIN):
             vol.Required(CONF_HUMIDITY_ENTITY): _SENSOR,
             vol.Required(CONF_TEMP_UNIT, default="F"): _UNIT,
             vol.Required(CONF_AIRPORT, default="KMRB"): selector.TextSelector(),
-            vol.Required(CONF_LAT, default=self.hass.config.latitude): _num(-90, 90, 0.0001),
-            vol.Required(CONF_LON, default=self.hass.config.longitude): _num(-180, 180, 0.0001),
+            vol.Required(CONF_LAT, default=self.hass.config.latitude): _num(-90, 90, "any"),
+            vol.Required(CONF_LON, default=self.hass.config.longitude): _num(-180, 180, "any"),
             vol.Required(CONF_TZ, default=self.hass.config.time_zone): selector.TextSelector(),
             vol.Optional(CONF_SCRIPTS_DIR, default=""): selector.TextSelector(),
         })
