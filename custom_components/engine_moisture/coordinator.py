@@ -79,6 +79,13 @@ class EngineMoistureCoordinator(DataUpdateCoordinator):
         if not cfg.get("backfill_csv_glob"):
             cfg["backfill_csv_glob"] = None
         cfg.setdefault(CONF_TZ, self.hass.config.time_zone)
+        # The chart file must live under an allowlist_external_dirs path for
+        # telegram_bot/send_photo. Default to <config>/www/moisture (i.e. /config/www/..,
+        # which HA allowlists by default and serves at /local). Empty or the old
+        # hard-coded default both fall through to this derived path.
+        www = cfg.get("www_dir")
+        if not www or www == "/homeassistant/www/moisture":
+            cfg["www_dir"] = self.hass.config.path("www", "moisture")
         return cfg
 
     # ---- state persistence ----
@@ -126,9 +133,10 @@ class EngineMoistureCoordinator(DataUpdateCoordinator):
 
         fire = out["fire"] or force
         if fire:
-            await self._send_alert(cfg, out, now_local)
-            self._state["last_alert_ts"] = now_local.isoformat()
-            await self._async_save_state()
+            sent = await self._send_alert(cfg, out, now_local)
+            if sent:  # only record an alert that actually went out
+                self._state["last_alert_ts"] = now_local.isoformat()
+                await self._async_save_state()
 
         self.last_run = dt_util.now()
         data = out["data"]
@@ -213,7 +221,7 @@ class EngineMoistureCoordinator(DataUpdateCoordinator):
         }
 
     # ---- alerting ----
-    async def _send_alert(self, cfg, out, now_local) -> None:
+    async def _send_alert(self, cfg, out, now_local) -> bool:
         # weather lookahead (blocking urllib) + chart render in the executor
         weather_info = await self.hass.async_add_executor_job(
             self._assess_weather, cfg)
@@ -225,8 +233,10 @@ class EngineMoistureCoordinator(DataUpdateCoordinator):
 
         import pipeline as pl
         text = pl.assemble_message(moisture_line, window_line)
-        await self._send_telegram(cfg, text, chart_path)
-        _LOGGER.info("Engine moisture nudge sent (%s)", out["data"].get("alert_reason"))
+        sent = await self._send_telegram(cfg, text, chart_path)
+        if sent:
+            _LOGGER.info("Engine moisture nudge sent (%s)", out["data"].get("alert_reason"))
+        return sent
 
     def _assess_weather(self, cfg):
         import weather
@@ -270,20 +280,24 @@ class EngineMoistureCoordinator(DataUpdateCoordinator):
             _LOGGER.warning("AI Task window predict failed: %s", err)
         return pl.window_fallback(weather_info)
 
-    async def _send_telegram(self, cfg, text, chart_path) -> None:
+    async def _send_telegram(self, cfg, text, chart_path) -> bool:
+        """Send the nudge. Try the chart photo first; on any failure fall back to a
+        text-only message so a chart/allowlist problem never silences the alert.
+        Returns True only if something was actually delivered."""
         target = cfg.get("telegram_target")
+        base = {"target": target} if target else {}
+        if chart_path:
+            try:
+                await self.hass.services.async_call(
+                    "telegram_bot", "send_photo",
+                    {"file": chart_path, "caption": text, **base}, blocking=True)
+                return True
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning("send_photo failed (%s); falling back to text", err)
         try:
-            if chart_path:
-                data = {"file": chart_path, "caption": text}
-                if target:
-                    data["target"] = target
-                await self.hass.services.async_call(
-                    "telegram_bot", "send_photo", data, blocking=True)
-            else:
-                data = {"message": text}
-                if target:
-                    data["target"] = target
-                await self.hass.services.async_call(
-                    "telegram_bot", "send_message", data, blocking=True)
+            await self.hass.services.async_call(
+                "telegram_bot", "send_message", {"message": text, **base}, blocking=True)
+            return True
         except Exception as err:  # noqa: BLE001
             _LOGGER.error("telegram send failed: %s", err)
+            return False
