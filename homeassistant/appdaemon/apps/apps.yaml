@@ -1,0 +1,63 @@
+# AppDaemon app config for the engine-moisture "want to go flying?" monitor.
+# This is the single place to tune the automation: sensors, airport, model
+# parameters, and alert thresholds. Restart AppDaemon (or save - it hot-reloads)
+# after editing.
+#
+# secrets (telegram_chat_id, etc.) live in AppDaemon's secrets.yaml.
+
+lyc_moisture:
+  module: moisture_monitor
+  class: MoistureMonitor
+
+  # --- X-Sense sensors (set these to YOUR entity ids; see README discovery step) ---
+  temp_entity: sensor.xsense_engine_temperature      # cowl air temperature
+  humidity_entity: sensor.xsense_engine_humidity     # cowl relative humidity (%)
+  temp_unit: F                                       # F or C (X-Sense default F)
+
+  # --- home airport (TAF + multi-day VFR/calm window lookup) ---
+  airport_icao: KMRB
+  latitude: 39.40
+  longitude: -77.98
+  timezone: America/New_York
+
+  # --- model parameters (defaults match scripts/model.py constants) ---
+  tau_metal_h: 8.0          # cam/lifter thermal lag (hours)
+  tau_bulk_h: 24.0          # slow bulk crankcase air-exchange (hours)
+  tau_event_h: 1.5          # fast frontal breather-flush (hours)
+  dry_factor: 0.3           # asymmetric film drying ratio (<1)
+  # run detection: a flight is an absolute hot reading OR a rapid engine-heat rise,
+  # which also catches shorter/cooler runs that never reach flight_temp_c.
+  flight_temp_c: 40.0       # cowl air above this = engine ran (resets the tally)
+  flight_rise_c: 8.0        # cowl rise (°C) over the window that signals a run
+  flight_rise_window_min: 10
+  flight_run_floor_c: 32.0  # the run's peak must clear this (else not a hot run)
+  flight_peak_window_min: 60
+  flight_debounce_h: 6.0
+  wet_caution_hours: 8.0    # grounding-caution wetness threshold
+  flight_limit_days: 30     # grounding-caution "a month grounded"
+
+  # --- optional CSV backfill: seed history before the recorder has a long window ---
+  # Point at your X-Sense export(s); live recorder data overrides where they overlap.
+  # backfill_csv_glob: /config/lyc-engine-moisture-exposure-analysis/data/Engine Thermo-hygrometer_*.csv
+
+  # --- scheduling / trailing window ---
+  run_every_minutes: 60
+  window_days: 14           # default trailing history pulled
+  max_window_days: 60       # cap when grounded a long time
+  spinup_days: 5            # extra history before last flight to settle the lags
+
+  # --- alert thresholds ---
+  alert_film_hours: 4.0     # cam wet-hours since last flight that earns a nudge
+  alert_cooldown_hours: 48  # don't re-nag within this window
+  forecast_horizon_days: 7  # how far out to look for a flying window (LLM caps at 7 d)
+  quiet_hours: [22, 7]      # [start_hour, end_hour] local; no pushes overnight
+
+  # --- notification ---
+  telegram_target: !secret telegram_chat_id   # chat/user id; remove to broadcast
+  www_dir: /homeassistant/www/moisture        # where chart PNGs are written
+  # message composer: HA 2026.x AI Task (Gemini). Confirmed entity on this box:
+  ai_task_service: ai_task/generate_data
+  ai_task_entity: ai_task.google_ai_task
+
+  # --- optional: an input_boolean to force a run from the UI (turn it on) ---
+  # manual_trigger: input_boolean.moisture_test_run

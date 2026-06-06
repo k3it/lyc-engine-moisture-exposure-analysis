@@ -5,3 +5,5 @@ __pycache__/
 *.png
 !docs/*.png
 data/*.csv
+# Home Assistant monitor runtime state (per-deployment; written by run_once.py)
+homeassistant/run_state.json
