@@ -7,3 +7,5 @@ __pycache__/
 data/*.csv
 # Home Assistant monitor runtime state (per-deployment; written by run_once.py)
 homeassistant/run_state.json
+# Local secrets (HA token, etc.) — never commit
+.env
