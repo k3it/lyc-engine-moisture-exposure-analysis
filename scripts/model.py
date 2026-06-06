@@ -47,6 +47,14 @@ FILM_CAP_GM2  = 15.0         # max film before gravity drainage off lobes (g/m^2
 WET_AREA_M2   = 0.30         # internal wetted steel (cam+lifters+lower case) (m^2)
 CRANKCASE_V   = 0.010        # crankcase free-gas volume (m^3)
 FLIGHT_TEMP_C = 40.0         # cowl-air temp above this => engine was run (resets clock)
+# A run also shows as a RAPID cowl-air rise (engine heat), which catches shorter/cooler
+# runs that never reach FLIGHT_TEMP_C. Solar heating creeps ~0.2 C/10 min; a run slams
+# the cowl up many degrees in minutes, so a rise gate separates the two cleanly.
+FLIGHT_RISE_C          = 8.0  # cowl rise over the window that signals a run
+FLIGHT_RISE_WINDOW_MIN = 10   # minutes over which the rise is measured
+FLIGHT_RUN_FLOOR_C     = 32.0 # the run's PEAK must clear this (else it's not a hot run)
+FLIGHT_PEAK_WINDOW_MIN = 60   # the peak may come up to this long after the rise onset
+FLIGHT_DEBOUNCE_H      = 6.0  # collapse run-start edges within this into one flight
 RICH_H2O_FRAC = 0.15         # rich-shutdown exhaust water fraction (vol) - informational
 # Conditional grounding caution (improves on Lycoming's blanket 'fly monthly'):
 FLIGHT_LIMIT_D  = 30         # days grounded that count as 'a month on the ground'
@@ -151,8 +159,44 @@ class Params:
     film_cap:    float = FILM_CAP_GM2
     wet_area_m2: float = WET_AREA_M2
     flight_temp_c: float = FLIGHT_TEMP_C
+    flight_rise_c: float = FLIGHT_RISE_C            # rapid-rise run detection
+    flight_rise_window_min: int = FLIGHT_RISE_WINDOW_MIN
+    flight_run_floor_c: float = FLIGHT_RUN_FLOOR_C
+    flight_peak_window_min: int = FLIGHT_PEAK_WINDOW_MIN
+    flight_debounce_h: float = FLIGHT_DEBOUNCE_H
     two_path:    bool = True               # False -> legacy single-tau low-pass
     tau_air_s:   float = TAU_AIR_S         # legacy single-tau (used iff two_path=False)
+
+def detect_flight_starts(g, p: "Params"):
+    """Return run-start timestamps. A run is flagged when cowl air is either above
+    flight_temp_c (absolute) OR rises faster than flight_rise_c over the rise window
+    while above flight_run_floor_c (the engine-heat signature). Edges within
+    flight_debounce_h are collapsed so one run counts once. Assumes a 1-min grid."""
+    T = g["Tc"].values
+    idx = g.index
+    n = len(T)
+    if n == 0:
+        return []
+    w = max(1, int(p.flight_rise_window_min))
+    rise = np.zeros(n)
+    if n > w:
+        rise[w:] = T[w:] - T[:-w]          # cowl rise over the window (deg C / window)
+    # the run's PEAK can arrive after the steep rise, so gate the rise on the
+    # forward-looking max temperature clearing the floor (not the instantaneous T).
+    sT = pd.Series(T, index=idx)
+    peak_ahead = sT[::-1].rolling(f"{int(p.flight_peak_window_min)}min",
+                                  min_periods=1).max()[::-1].values
+    hot = T > p.flight_temp_c
+    rapid = (rise > p.flight_rise_c) & (peak_ahead > p.flight_run_floor_c)
+    flag = hot | rapid
+    prev = np.concatenate(([False], flag[:-1]))
+    edges = idx[flag & ~prev]
+    deb = pd.Timedelta(hours=p.flight_debounce_h)
+    out, last = [], None
+    for ts in edges:
+        if last is None or (ts - last) >= deb:
+            out.append(ts); last = ts
+    return out
 
 def analyze(g: pd.DataFrame, p: Params = Params()):
     """Run the full model on a regridded frame. Returns a dict of results plus
@@ -190,9 +234,8 @@ def analyze(g: pd.DataFrame, p: Params = Params()):
             cond_mass_gm2 += flux[i]
     film_present = film > 0.1
 
-    # flight / run detection -> reset points
-    ran = T > p.flight_temp_c
-    flight_starts = g.index[ran & ~np.roll(ran, 1)]
+    # flight / run detection -> reset points (absolute hot OR rapid engine-driven rise)
+    flight_starts = detect_flight_starts(g, p)
 
     res = {
         "span": (g.index.min().isoformat(), g.index.max().isoformat()),
