@@ -248,6 +248,7 @@ def analyze(g: pd.DataFrame, p: Params = Params()):
         "peak_film_gm2": float(film.max()),
         "flight_count": int(len(flight_starts)),
         "last_flight": flight_starts[-1].isoformat() if len(flight_starts) else None,
+        "flights": [ts.isoformat() for ts in flight_starts],   # all run-start points
         "params": asdict(p),
     }
 

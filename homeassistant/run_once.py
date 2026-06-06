@@ -1,10 +1,10 @@
 """
 Run ONE moisture-monitor cycle against a live Home Assistant over the REST API.
 
-This is the engine's portable core: it reuses the same pure helpers the AppDaemon
-app uses (build_frame / run_model / reconcile_last_flight / decide_alert / compose)
-but talks to HA through ha_client.HAClient, so it runs from a laptop now and drops
-into a Docker add-on later unchanged.
+This is a CLI/dev tool: it reuses the same canonical pipeline the custom integration
+uses (scripts/pipeline.py: build_frame / run_model / reconcile_last_flight /
+decide_alert / compose) but talks to HA through ha_client.HAClient over REST, so it can
+drive a live HA from a laptop for testing without installing the integration.
 
 Usage:
     set HA_URL=http://homeassistant:8123   (default)
@@ -26,10 +26,10 @@ except Exception:
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
-sys.path.insert(0, str(HERE / "appdaemon" / "apps"))  # moisture_monitor + weather
-sys.path.insert(0, str(HERE))                          # ha_client
+sys.path.insert(0, str(REPO / "scripts"))  # canonical model + pipeline + weather + charts
+sys.path.insert(0, str(HERE))              # ha_client
 
-import moisture_monitor as mm
+import pipeline as mm
 import weather
 from ha_client import HAClient
 

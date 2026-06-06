@@ -24,12 +24,11 @@ except Exception:
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 sys.path.insert(0, str(REPO / "scripts"))
-sys.path.insert(0, str(HERE / "appdaemon" / "apps"))
 
 import pandas as pd
 from model import load_csv, regrid
 from cowl_io import to_utc
-import moisture_monitor as mm
+import pipeline as mm
 
 
 def newest_csv():

@@ -1,24 +1,22 @@
 """
-AppDaemon app: live engine-moisture monitor + "want to go flying?" nudge.
+Pure, HA-agnostic orchestration pipeline around the canonical model.
 
-It pulls the X-Sense temp/RH history from Home Assistant's recorder, runs the
-*canonical* physics model (scripts/model.py - imported, never copied, so editing
-the model keeps this in sync), publishes cam-wetness sensors back to HA, and -
-when the cam has sipped enough water since the last flight AND there's a calm VFR
-window soon - composes a friendly Telegram nudge with charts.
-
-The hot-run signature (cowl air > flight_temp_c) is already what model.py uses to
-mark a flight; since_last_flight() slices the series there, so the running tally
-means "what your cam has accumulated since you last flew". We persist the last
-flight across runs so the tally survives even when it scrolls out of the window.
-
-Design note: everything except the MoistureMonitor class is a plain function with
-no AppDaemon/HA dependency, so the whole pipeline is exercised offline by
-test_local.py. The AppDaemon import is guarded so this module imports anywhere.
+Everything here is a plain function with no Home Assistant / AppDaemon dependency, so
+the whole monitoring pipeline can be exercised offline (see homeassistant/test_local.py)
+and reused by every host: the custom_components/engine_moisture integration and the
+run_once.py CLI both import these helpers. The physics live in model.py (the single
+source of truth); this module only shapes inputs, runs the model, and turns the result
+into the monitor's headline numbers, alert decision, and message text.
 """
 from __future__ import annotations
-import os, sys, json, datetime as dt
-from pathlib import Path
+import glob as _glob
+import datetime as dt
+
+import pandas as pd
+
+from model import (
+    Params, regrid, analyze, episodes, since_last_flight, grounding_caution, load_csv,
+)
 
 try:
     from zoneinfo import ZoneInfo
@@ -27,45 +25,7 @@ except Exception:  # pragma: no cover
 
 
 # --------------------------------------------------------------------------------
-# Locate the canonical model. scripts/ stays the single source of truth; we add it
-# to sys.path rather than copying, so a `git pull` on the HA box updates the model
-# and AppDaemon hot-reloads. Override with LYC_SCRIPTS_DIR if deployed elsewhere.
-# --------------------------------------------------------------------------------
-def _locate_scripts():
-    here = Path(__file__).resolve()
-    candidates = []
-    env = os.environ.get("LYC_SCRIPTS_DIR")
-    if env:
-        candidates.append(Path(env))
-    # repo layout: <root>/homeassistant/appdaemon/apps/moisture_monitor.py
-    candidates.append(here.parents[3] / "scripts")
-    candidates.append(here.parent / "scripts")  # flat fallback
-    for c in candidates:
-        if (c / "model.py").exists():
-            if str(c) not in sys.path:
-                sys.path.insert(0, str(c))
-            return str(c)
-    raise ImportError(
-        "Could not find scripts/model.py. Deploy the whole repo and/or set "
-        "LYC_SCRIPTS_DIR to the directory containing model.py."
-    )
-
-
-_SCRIPTS_DIR = _locate_scripts()
-import glob as _glob  # noqa: E402
-import pandas as pd  # noqa: E402  (after path setup is harmless; pandas is independent)
-from model import (  # noqa: E402
-    Params, regrid, analyze, episodes, since_last_flight, grounding_caution,
-    load_csv,
-)
-
-# weather.py lives next to this file
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import weather  # noqa: E402
-
-
-# --------------------------------------------------------------------------------
-# Config defaults (mirror model.py constants; overridden by apps.yaml)
+# Config defaults (mirror model.py constants; hosts override via apps.yaml / Options)
 # --------------------------------------------------------------------------------
 DEFAULTS = {
     "timezone": "America/New_York",
@@ -98,6 +58,7 @@ DEFAULTS = {
     "alert_cooldown_hours": 48,
     "forecast_horizon_days": 7,   # LLM looks for a window up to a week out (no further)
     "quiet_hours": [22, 7],
+    "chart_history_days": 75,     # how much past history the alert chart shows (~2.5 mo)
     "www_dir": "/homeassistant/www/moisture",
     "chart_url_base": "/local/moisture",   # /local maps to <config>/www
     # HA 2026.x AI Task (Gemini). Older builds used google_generative_ai_conversation.
@@ -108,7 +69,7 @@ DEFAULTS = {
 
 
 # --------------------------------------------------------------------------------
-# Pure pipeline helpers (no HA dependency)
+# Pure pipeline helpers
 # --------------------------------------------------------------------------------
 def _local_tz(name):
     if ZoneInfo is not None:
@@ -123,7 +84,7 @@ def hist_to_series(states, tz_name):
     """Recorder state list -> pandas Series indexed by NAIVE LOCAL time.
 
     `states` is a list of dicts with 'state' and 'last_changed'/'last_updated'
-    (the shape AppDaemon's get_history returns per entity)."""
+    (the shape AppDaemon's get_history and the recorder both reduce to)."""
     rows = []
     for s in states or []:
         v = s.get("state")
@@ -141,13 +102,8 @@ def hist_to_series(states, tz_name):
     idx = pd.to_datetime([r[0] for r in rows], utc=True, errors="coerce")
     ser = pd.Series([r[1] for r in rows], index=idx).dropna()
     ser = ser[~ser.index.duplicated(keep="last")].sort_index()
-    ser.index = ser.index.tz_convert(_tz_str(tz_name)).tz_localize(None)
+    ser.index = ser.index.tz_convert(tz_name).tz_localize(None)
     return ser
-
-
-def _tz_str(name):
-    # pandas accepts the IANA string directly
-    return name
 
 
 def load_backfill_csv(glob_pattern):
@@ -398,223 +354,3 @@ def extract_llm_text(resp):
     if isinstance(resp, (list, tuple)) and resp:
         return extract_llm_text(resp[0])
     return None
-
-
-# --------------------------------------------------------------------------------
-# AppDaemon orchestration (guarded import so the helpers above stay importable)
-# --------------------------------------------------------------------------------
-try:
-    import appdaemon.plugins.hass.hassapi as hass
-    _BASE = hass.Hass
-except Exception:  # pragma: no cover - not running under AppDaemon
-    _BASE = object
-
-
-class MoistureMonitor(_BASE):
-    # ---- lifecycle ----
-    def initialize(self):
-        self.cfg = {**DEFAULTS, **{k: v for k, v in self.args.items()
-                                   if k not in ("module", "class")}}
-        self.tz = _local_tz(self.cfg["timezone"])
-        self.state_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "moisture_state.json")
-        self.state = self._load_state()
-        os.makedirs(self.cfg["www_dir"], exist_ok=True)
-
-        interval = int(self.cfg["run_every_minutes"]) * 60
-        self.run_every(self.run_cycle, "now+30", interval)
-        self.listen_event(self.on_manual, "lyc_moisture_run")
-        trig = self.cfg.get("manual_trigger")
-        if trig:
-            self.listen_state(self.on_manual_state, trig, new="on")
-        self.log(f"MoistureMonitor up. Model from {_SCRIPTS_DIR}. "
-                 f"Cycle every {self.cfg['run_every_minutes']} min.")
-
-    def on_manual(self, event_name, data, kwargs):
-        self.log("Manual run requested via event.")
-        self.run_cycle({"force": bool((data or {}).get("force"))})
-
-    def on_manual_state(self, entity, attribute, old, new, kwargs):
-        self.log("Manual run requested via input_boolean.")
-        self.run_cycle({})
-
-    # ---- main cycle ----
-    def run_cycle(self, kwargs):
-        try:
-            self._cycle(force=bool(kwargs.get("force")))
-        except Exception as e:
-            self.error(f"moisture cycle failed: {e}", level="ERROR")
-            raise
-
-    def _cycle(self, force=False):
-        cfg = self.cfg
-        now_local = dt.datetime.now(self.tz).replace(tzinfo=None)
-
-        # dynamic window: enough to cover since-last-flight + lag spin-up
-        stored_lf = self.state.get("last_flight")
-        win_days = cfg["window_days"]
-        if stored_lf:
-            try:
-                lf_dt = dt.datetime.fromisoformat(stored_lf)
-                grounded_days = (now_local - lf_dt).days
-                win_days = min(cfg["max_window_days"],
-                               max(cfg["window_days"], grounded_days + cfg["spinup_days"]))
-            except ValueError:
-                pass
-
-        temp_hist = self._history(cfg["temp_entity"], win_days)
-        rh_hist = self._history(cfg["humidity_entity"], win_days)
-        backfill = load_backfill_csv(cfg.get("backfill_csv_glob"))
-        g = build_frame(temp_hist, rh_hist, cfg["timezone"], cfg["temp_unit"],
-                        backfill_df=backfill,
-                        max_days=cfg["max_window_days"] + cfg["spinup_days"])
-        if g is None:
-            self.log("No usable sensor history this cycle; skipping.")
-            return
-
-        res, series = run_model(g, cfg)
-        last_flight, is_new_flight = reconcile_last_flight(
-            res, series, stored_lf, cfg)
-
-        if is_new_flight:
-            self.log(f"New hot run detected at {last_flight}; tally reset.")
-            self.state["last_alert_ts"] = None
-        self.state["last_flight"] = last_flight
-        self._save_state()
-
-        self._publish_sensors(res)
-
-        nw = near_wet_stats(series, res, cfg["close_call_margin_c"])
-        fire, reason = decide_alert(nw, res["since_last_flight"], self.state, cfg, now_local)
-        if force:
-            fire, reason = True, "forced"
-        self.log(f"Alert decision: {fire} ({reason}). "
-                 f"sub_dew={nw['sub_dew_h']}h close_call={nw['close_call_h']}h "
-                 f"film={res['since_last_flight'].get('film_hours')}h")
-        if fire:
-            weather_info = weather.assess(
-                cfg["airport_icao"], cfg["latitude"], cfg["longitude"],
-                cfg["timezone"], cfg["forecast_horizon_days"])
-            self._send_alert(res, series, nw, weather_info)
-            self.state["last_alert_ts"] = now_local.isoformat()
-            self._save_state()
-
-    # ---- HA I/O ----
-    def _history(self, entity_id, days):
-        try:
-            data = self.get_history(entity_id=entity_id, days=days)
-        except Exception as e:
-            self.error(f"get_history failed for {entity_id}: {e}", level="WARNING")
-            return []
-        if data and isinstance(data[0], list):  # list-of-lists shape
-            return data[0]
-        return data or []
-
-    def _publish_sensors(self, res):
-        slf = res["since_last_flight"]
-        gc = res["grounding_caution"]
-        latest = slf.get("latest", {})
-        self.set_state(
-            "sensor.cam_film_hours_since_flight",
-            state=round(slf.get("film_hours", 0), 1),
-            attributes={
-                "unit_of_measurement": "h",
-                "friendly_name": "Cam wet-hours since last flight",
-                "icon": "mdi:water-percent",
-                "days_since_flight": slf.get("days"),
-                "wet_hours_realistic": slf.get("wet_hours_realistic"),
-                "ambient_damp_hours_ub": slf.get("ambient_damp_hours_ub"),
-                "last_flight": res.get("last_flight"),
-                "latest_temp_c": latest.get("Tc"),
-                "latest_rh_pct": latest.get("RH"),
-                "latest_reading": latest.get("time"),
-            })
-        self.set_state(
-            "sensor.cam_days_since_flight",
-            state=slf.get("days"),
-            attributes={"unit_of_measurement": "d",
-                        "friendly_name": "Days since last flight",
-                        "icon": "mdi:calendar-clock"})
-        self.set_state(
-            "sensor.cam_last_flight",
-            state=res.get("last_flight") or "unknown",
-            attributes={"friendly_name": "Last engine run",
-                        "icon": "mdi:airplane-takeoff",
-                        "flight_count": res.get("flight_count")})
-        self.set_state(
-            "binary_sensor.cam_grounding_caution",
-            state="on" if gc.get("caution") else "off",
-            attributes={"device_class": "problem",
-                        "friendly_name": "Cam grounding caution",
-                        "reason": gc.get("reason"),
-                        "wet_hours_since_flight": gc.get("wet_hours_since_flight"),
-                        "days_grounded": gc.get("days_grounded")})
-
-    def _send_alert(self, res, series, nw, weather_info):
-        cfg = self.cfg
-        # deterministic moisture status (model) + Gemini-predicted flying window
-        moisture_line = moisture_status_line(res, series, cfg["close_call_margin_c"], nw)
-        window_line = self._window(weather_info)
-        text = assemble_message(moisture_line, window_line)
-
-        # single summary chart, attached to the one message as its caption
-        chart = self._make_chart(series, res, nw)
-        target = cfg.get("telegram_target")
-        try:
-            if chart:
-                kw = {"file": chart, "caption": text}
-                if target:
-                    kw["target"] = target
-                self.call_service("telegram_bot/send_photo", **kw)
-            else:
-                kw = {"message": text}
-                if target:
-                    kw["target"] = target
-                self.call_service("telegram_bot/send_message", **kw)
-        except Exception as e:
-            self.error(f"telegram send failed: {e}", level="ERROR")
-        self.log("Sent flying nudge (1 message, summary chart).")
-
-    def _window(self, weather_info):
-        """Gemini predicts ONLY the next flying window; never the moisture."""
-        prompt = build_window_prompt(weather_info, self.cfg["airport_icao"])
-        svc = self.cfg["ai_task_service"]
-        try:
-            resp = self.call_service(
-                svc, task_name="flying_window", instructions=prompt,
-                entity_id=self.cfg["ai_task_entity"], return_result=True)
-            text = extract_llm_text(resp)
-            if text:
-                return text
-        except Exception as e:
-            self.error(f"LLM window predict failed ({svc}): {e}", level="WARNING")
-        return window_fallback(weather_info)
-
-    def _make_chart(self, series, res, nw):
-        try:
-            import charts as ch  # from scripts/, on sys.path
-        except Exception as e:
-            self.error(f"charts import failed: {e}", level="WARNING")
-            return None
-        path = os.path.join(self.cfg["www_dir"],
-                            f"summary_{dt.datetime.now():%Y%m%d_%H%M}.png")
-        try:
-            return ch.summary_chart(series, res, path, margin_c=nw["margin_c"])
-        except Exception as e:
-            self.error(f"summary chart failed: {e}", level="WARNING")
-            return None
-
-    # ---- state persistence ----
-    def _load_state(self):
-        try:
-            with open(self.state_path) as f:
-                return json.load(f)
-        except (OSError, ValueError):
-            return {"last_flight": None, "last_alert_ts": None}
-
-    def _save_state(self):
-        try:
-            with open(self.state_path, "w") as f:
-                json.dump(self.state, f, indent=2)
-        except OSError as e:
-            self.error(f"could not persist state: {e}", level="WARNING")

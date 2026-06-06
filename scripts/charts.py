@@ -91,47 +91,73 @@ def dewpoint_divergence_chart(series, center_time, out, hours=18):
     plt.tight_layout(rect=[0,0,1,0.86]); plt.savefig(out, dpi=160); plt.close()
     return out
 
-def summary_chart(series, res, out, margin_c=2.0, days=None):
-    """ONE at-a-glance chart of cam moisture since the last flight: metal vs interior
-    dew point, with condensing and 'close-call' (within margin_c) periods shaded, plus
-    a cumulative wet+close hours line. Built for the Telegram nudge."""
+def summary_chart(series, res, out, margin_c=2.0, history_days=75, days=None):
+    """ONE at-a-glance chart for the Telegram nudge: cam metal vs interior dew point
+    over the last `history_days` (default ~2.5 months for context), with condensing and
+    'close-call' (within margin_c) periods shaded. Detected flights are marked with
+    vertical lines, and the cumulative wet+close-hours line RESETS to zero at each flight
+    -- so the purple sawtooth shows how exposure built up and was purged each time the
+    engine ran, making the current since-last-flight climb easy to read against the past.
+
+    `history_days` controls the visible window; `days` is a deprecated alias kept for
+    older callers (when given it overrides history_days)."""
     _style()
-    lf = res.get("last_flight")
-    s = series.loc[lf:] if lf else series
-    if days:
-        s = s.loc[s.index.max() - pd.Timedelta(days=days):]
+    win = days if days is not None else history_days
+    s = series.loc[series.index.max() - pd.Timedelta(days=win):] if win else series
     t = s.index
     gap = (s["Td_int"] - s["Tm"])
     cond = (gap > 0).values                       # at/below dew point -> condensing
     close = ((gap > -margin_c) & (gap <= 0)).values   # within margin, not yet crossing
     m = int(round(margin_c))
 
+    # flight reset points inside the visible window (model exposes all run starts)
+    flights = res.get("flights") or ([res["last_flight"]] if res.get("last_flight") else [])
+    f_ts = [pd.Timestamp(f) for f in flights if f]
+    f_ts = [f for f in f_ts if t[0] <= f <= t[-1]]
+    reset_pos = sorted({int(t.searchsorted(f)) for f in f_ts if 0 <= t.searchsorted(f) < len(t)})
+
     EXPO = "#6d28d9"   # violet, distinct from the steel/teal temperature traces
-    fig, ax = plt.subplots(figsize=(9, 4.6))
-    ax.plot(t, s["Tm"], color=STEEL, lw=2.0, label="Cam metal temp")
-    ax.plot(t, s["Td_int"], color=TEAL, lw=1.5, ls=(0, (5, 2)), label="Interior dew point")
+    fig, ax = plt.subplots(figsize=(9.6, 4.8))
+    ax.plot(t, s["Tm"], color=STEEL, lw=1.8, label="Cam metal temp")
+    ax.plot(t, s["Td_int"], color=TEAL, lw=1.4, ls=(0, (5, 2)), label="Interior dew point")
     lo, hi = ax.get_ylim()
     ax.fill_between(t, lo, hi, where=cond, color=RUST, alpha=0.32,
                     label="At/below dew point (condensing)")
     ax.fill_between(t, lo, hi, where=close & ~cond, color=AMBER, alpha=0.22,
                     label=f"Within {m} °C (close call)")
+    # flight markers (tally reset points)
+    for j, fi in enumerate(reset_pos):
+        ax.axvline(t[fi], color=STEEL, lw=1.1, ls=(0, (2, 2)), alpha=0.55,
+                   label="Flight (tally reset)" if j == 0 else None)
     ax.set_ylim(lo, hi); ax.set_ylabel("Temperature (°C)"); _clean(ax)
 
-    expo = np.cumsum((cond | close).astype(float)) / 60.0   # cumulative hours
+    # cumulative wet+close hours, reset to 0 at each flight -> sawtooth across history
+    wetmin = (cond | close).astype(float) / 60.0
+    expo = np.empty(len(wetmin)); acc = 0.0
+    resets = set(reset_pos)
+    for i in range(len(wetmin)):
+        if i in resets:
+            acc = 0.0
+        acc += wetmin[i]
+        expo[i] = acc
     ax2 = ax.twinx()
-    ax2.plot(t, expo, color=EXPO, lw=1.6, label="Cumulative wet + close hours")
-    ax2.set_ylabel("Cumulative wet + close hours", color=EXPO)
-    ax2.tick_params(colors=EXPO); ax2.spines["top"].set_visible(False)
+    ax2.plot(t, expo, color=EXPO, lw=1.6, label="Wet + close hours (resets each flight)")
+    ax2.set_ylabel("Wet + close hours since flight", color=EXPO)
+    ax2.set_ylim(bottom=0); ax2.tick_params(colors=EXPO); ax2.spines["top"].set_visible(False)
 
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
     h1, l1 = ax.get_legend_handles_labels()
     h2, l2 = ax2.get_legend_handles_labels()
-    ax.legend(h1 + h2, l1 + l2, frameon=False, fontsize=8.2, loc="upper left", ncol=2)
+    ax.legend(h1 + h2, l1 + l2, frameon=False, fontsize=8.0, loc="upper left", ncol=2)
     slf = res.get("since_last_flight", {})
-    sub_h = round(float(cond.sum()) / 60, 1)
-    close_h = round(float((close & ~cond).sum()) / 60, 1)
-    _header(fig, "Cam moisture since last flight",
-            f"{slf.get('days')} d grounded  ·  {sub_h} h at/below dew point  ·  "
-            f"{close_h} h within {m} °C")
+    # since-last-flight tally (headline) computed over the post-flight slice
+    lf = res.get("last_flight")
+    sl = s.loc[lf:] if lf else s
+    glf = (sl["Td_int"] - sl["Tm"])
+    sub_h = round(float((glf > 0).sum()) / 60, 1)
+    close_h = round(float(((glf > -margin_c) & (glf <= 0)).sum()) / 60, 1)
+    _header(fig, "Cam moisture — last %d days" % int(win) if win else "Cam moisture",
+            f"Since last flight: {slf.get('days')} d  ·  {sub_h} h at/below dew point  ·  "
+            f"{close_h} h within {m} °C  ·  {len(f_ts)} flights shown")
     plt.tight_layout(rect=[0, 0, 1, 0.86]); plt.savefig(out, dpi=160); plt.close()
     return out

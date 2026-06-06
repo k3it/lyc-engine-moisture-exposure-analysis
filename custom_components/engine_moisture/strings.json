@@ -1,0 +1,71 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Engine Moisture Monitor",
+        "description": "Point the monitor at your cowl temperature/humidity sensors and home field. Everything else is tunable later in Configure.",
+        "data": {
+          "temp_entity": "Cowl temperature sensor",
+          "humidity_entity": "Cowl humidity sensor",
+          "temp_unit": "Temperature unit",
+          "airport_icao": "Home airport (ICAO)",
+          "latitude": "Latitude",
+          "longitude": "Longitude",
+          "timezone": "Time zone",
+          "scripts_dir": "Path to repo scripts/ (leave blank to auto-detect)"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Engine Moisture Monitor settings",
+        "description": "Schedule, model parameters, and alert thresholds. Changes reload the integration.",
+        "data": {
+          "run_every_minutes": "Run cycle every (minutes)",
+          "tau_metal_h": "Metal thermal lag τ (h)",
+          "tau_bulk_h": "Bulk crankcase exchange τ (h)",
+          "tau_event_h": "Frontal breather-flush τ (h)",
+          "dry_factor": "Asymmetric drying factor (<1)",
+          "flight_temp_c": "Flight detect: absolute cowl temp (°C)",
+          "flight_rise_c": "Flight detect: rapid rise (°C)",
+          "flight_rise_window_min": "Flight detect: rise window (min)",
+          "flight_run_floor_c": "Flight detect: peak floor (°C)",
+          "flight_peak_window_min": "Flight detect: peak window (min)",
+          "flight_debounce_h": "Flight detect: debounce (h)",
+          "window_days": "Default trailing window (days)",
+          "max_window_days": "Max trailing window (days)",
+          "spinup_days": "Lag spin-up (days)",
+          "close_call_margin_c": "Close-call margin (°C)",
+          "alert_wet_hours": "Alert: sub-dew hours",
+          "alert_close_call_hours": "Alert: close-call hours",
+          "alert_film_hours": "Alert: film hours",
+          "alert_cooldown_hours": "Alert cooldown (h)",
+          "wet_caution_hours": "Grounding caution: wet hours",
+          "flight_limit_days": "Grounding caution: days grounded",
+          "forecast_horizon_days": "Forecast horizon (days)",
+          "chart_history_days": "Alert chart history (days)",
+          "quiet_start": "Quiet hours start (local hour)",
+          "quiet_end": "Quiet hours end (local hour)",
+          "telegram_target": "Telegram chat id (blank = broadcast)",
+          "ai_task_entity": "AI Task entity (flying-window text)",
+          "www_dir": "Chart output directory",
+          "backfill_csv_glob": "Backfill CSV glob (optional)"
+        }
+      }
+    }
+  },
+  "services": {
+    "run_now": {
+      "name": "Run now",
+      "description": "Run one moisture-model cycle immediately, optionally forcing the notification.",
+      "fields": {
+        "force": {
+          "name": "Force notification",
+          "description": "Send the nudge even if thresholds/quiet-hours/cooldown would suppress it."
+        }
+      }
+    }
+  }
+}

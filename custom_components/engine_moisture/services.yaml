@@ -1,0 +1,14 @@
+run_now:
+  name: Run now
+  description: >-
+    Run one moisture-model cycle immediately (in addition to the scheduled run).
+    Useful from a dashboard button or an automation. With "force" on, it sends the
+    flying nudge regardless of the exposure thresholds, quiet hours, or cooldown.
+  fields:
+    force:
+      name: Force notification
+      description: Send the Telegram nudge even if thresholds/quiet-hours/cooldown would suppress it.
+      required: false
+      default: false
+      selector:
+        boolean:

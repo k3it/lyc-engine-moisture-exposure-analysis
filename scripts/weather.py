@@ -11,9 +11,10 @@ The job here is not a flight briefing - it is to answer "is there an obviously n
 calm, VFR window in the next few days, ideally a weekend afternoon?" and to hand back
 a short human summary the message-composer (Gemini) can weave in.
 
-No AppDaemon / Home Assistant dependency: importable and runnable standalone
+No Home Assistant dependency: importable and runnable standalone
     python weather.py KMRB 39.40 -77.98
-so it can be tested before it ever runs inside HA.
+so it can be tested before it ever runs inside HA. This module is part of the canonical
+scripts/ core; the HA integration and the run_once.py CLI both import it.
 """
 from __future__ import annotations
 import json, re, datetime as dt
@@ -264,7 +265,7 @@ def assess(icao, lat, lon, tz_name="America/New_York", horizon_days=4, now=None)
     brief_lines = [f"{d['day']}: wind {d['wind_kt']} kt, {d['sky']}, precip {d['max_pop_pct']}%"
                    for d in daily]
     forecast_brief = (f"{taf_s}\nNear-term TAF: {raw_taf}\n"
-                      f"Daytime outlook (KMRB area):\n  " + "\n  ".join(brief_lines)
+                      f"Daytime outlook ({icao} area):\n  " + "\n  ".join(brief_lines)
                       if brief_lines else taf_s)
     if windows:
         # de-dup phrases in chronological order for the summary

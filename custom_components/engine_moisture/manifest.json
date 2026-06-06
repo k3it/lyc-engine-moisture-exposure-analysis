@@ -1,0 +1,14 @@
+{
+  "domain": "engine_moisture",
+  "name": "Engine Moisture Monitor",
+  "version": "0.1.0",
+  "documentation": "https://github.com/k3it/lyc-engine-moisture-exposure-analysis",
+  "issue_tracker": "https://github.com/k3it/lyc-engine-moisture-exposure-analysis/issues",
+  "codeowners": ["@k3it"],
+  "config_flow": true,
+  "iot_class": "local_polling",
+  "integration_type": "service",
+  "dependencies": ["recorder"],
+  "after_dependencies": ["telegram_bot", "ai_task"],
+  "requirements": ["pandas", "numpy", "matplotlib"]
+}
