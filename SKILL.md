@@ -30,39 +30,47 @@ it documents the two-inertia model and why each assumption holds.
 ## The model in one paragraph
 
 Corrosion is driven by **time-of-wetness**, not grams of water. The cam/lifter steel
-lags air temperature (metal thermal inertia, `tau_metal` ≈ 8 h). Crucially, the
-crankcase only breathes through restricted paths (breather tube, tortuous exhaust,
-plugged/filtered intake), so interior humidity is a heavily lagged version of ambient
-(**air-exchange inertia, `tau_air` ≈ 1 day–1 week**) — this is what makes transient
-humid spells largely harmless. Condensation occurs when interior vapour pressure
-exceeds saturation at the metal temperature. A film mass-balance adds the post-event
-drying tail. Each hot run resets the clock and refreshes the oil's inhibitor film.
+lags air temperature (metal thermal inertia, `tau_metal` ≈ 8 h). The crankcase only
+breathes through restricted paths, so interior humidity lags ambient via **two parallel
+paths**: a slow bulk path (`tau_bulk` ≈ 1 day, always on) plus a fast event path
+(`tau_event` ≈ 1.5 h) that opens on **rising ambient vapour pressure** — moist air
+flushing the breather onto a still-cold cam. A single lag averages those frontal
+condensation events away; the event path is what lets the model see them. Condensation
+occurs when interior vapour pressure exceeds saturation at the metal temperature. A film
+mass-balance adds the post-event drying tail, with **asymmetric drying** (`dry_factor`
+≈ 0.3 — water draining toward the immiscible oil re-evaporates slowly). Each hot run
+resets the clock and refreshes the oil's inhibitor film; a **grounding caution** fires
+only when a month grounded *followed real wetting* (a data-aware take on Lycoming's
+blanket "fly monthly"). Flights are not distinguished from ground runs (KISS — the cowl
+sensor can't confirm oil temperature).
 
 ## How to use it
 
 ### 1. Analyze a sensor export (most common)
 
 ```bash
-python scripts/model.py /path/to/xsense_export.csv --tau-air-h 24 --json
+python scripts/model.py /path/to/xsense_export.csv --tau-bulk-h 24 --tau-event-h 1.5 --json
 ```
 
 The CSV needs three columns (names are matched loosely): a time column, temperature
 in °F, and relative humidity in %. Output is a JSON summary with sub-dew-point hours
 (**realistic** and **upper-bound**), film-hours, an honest condensed-mass figure,
-flight detection, episodes, and exposure **since the last flight**.
+flight detection, episodes, the grounding caution, and exposure **since the last flight**.
 
-Always report **two numbers**: the realistic figure (interior air lag applied) and
-the upper bound (`tau_air = 0`). The gap between them is the protection the restricted
-breathing provides — present it, don't hide it.
+Always report **two numbers**: the realistic figure (two-path interior exchange) and
+the upper bound (instant ingress, `k = ∞`). The gap between them is the protection the
+restricted breathing provides — present it, don't hide it.
 
 ### 2. Programmatic / from live readings
 
 ```python
-from scripts.model import from_records, regrid, analyze, episodes, since_last_flight, Params
+from scripts.model import (from_records, regrid, analyze, episodes,
+                           since_last_flight, grounding_caution, Params)
 g = regrid(from_records(readings))         # readings: [{"time":..., "tf":..., "rh":...}, ...]
-res, series = analyze(g, Params(tau_air_s=24*3600))
+res, series = analyze(g, Params())         # two-path ingress + asymmetric drying by default
 res["episodes"] = episodes(series)
 res["since_last_flight"] = since_last_flight(series, res)
+res["grounding_caution"] = grounding_caution(res["since_last_flight"])
 ```
 
 ### 3. Charts (for a report or a Telegram attachment)

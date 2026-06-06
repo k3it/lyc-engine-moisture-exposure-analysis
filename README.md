@@ -15,14 +15,20 @@ total mass of water. The model computes that from the measured air, accounting f
 inertias that a naive dew-point comparison misses:
 
 1. **Metal thermal inertia** (`tau_metal` ≈ 8 h) — the buried cam lags air temperature.
-2. **Air-exchange inertia** (`tau_air` ≈ 1 day–1 week) — the crankcase only breathes
-   through restricted paths (breather tube, tortuous exhaust, plugged/filtered intake),
-   so interior humidity is a heavily low-pass-filtered version of ambient. This is what
-   makes transient humid spells largely harmless, and it collapses the naive
-   time-of-wetness estimate by ~80–100%.
+2. **Air-exchange inertia — two parallel paths.** The crankcase only breathes through
+   restricted paths, so interior humidity lags ambient. A *slow bulk* path
+   (`tau_bulk` ≈ 1 day: diffusion + mean thermal breathing) sets the quiet-weather floor;
+   a *fast event* path (`tau_event` ≈ 1.5 h, gated on **rising ambient vapour pressure**)
+   captures the breather flushing when a moist air mass moves in onto a still-cold cam.
+   A single lag averages those frontal condensation events away (it predicts *zero*
+   wet-hours on the KMRB record); the event path recovers them — ~17 realistic sub-dew
+   hours/yr, concentrated in late winter/early spring.
 
-A film mass-balance adds the post-event **drying tail**. Each hot run resets the
-exposure clock and refreshes the oil's corrosion-inhibitor film.
+A film mass-balance adds the post-event **drying tail**, with **asymmetric drying**
+(`dry_factor` ≈ 0.3): water that drains toward the immiscible, denser oil re-evaporates
+far slower than it condensed. Each hot run resets the exposure clock and refreshes the
+oil's corrosion-inhibitor film; a **conditional grounding caution** flags a month on the
+ground only when it followed real wetting (improving on Lycoming's blanket "fly monthly").
 
 See [`references/METHODOLOGY.md`](references/METHODOLOGY.md) for the full derivation,
 constants, and caveats (including the oil-borne moisture reservoir the bay sensor can't
@@ -32,7 +38,7 @@ see — which is why flying to temperature is the real mitigation).
 
 ```bash
 pip install pandas numpy matplotlib
-python scripts/model.py your_sensor_export.csv --tau-air-h 24 --json
+python scripts/model.py your_sensor_export.csv --tau-bulk-h 24 --tau-event-h 1.5 --json
 ```
 
 The CSV needs three columns (matched loosely): a time column, temperature (°F), and
@@ -41,13 +47,15 @@ relative humidity (%). Output is a JSON summary: sub-dew-point hours (**realisti
 episodes, and exposure **since the last flight**.
 
 ```python
-from scripts.model import load_csv, regrid, analyze, episodes, since_last_flight, Params
+from scripts.model import (load_csv, regrid, analyze, episodes,
+                           since_last_flight, grounding_caution, Params)
 from scripts.charts import event_chart, seasonal_chart, dewpoint_divergence_chart
 
 g = regrid(load_csv("export.csv"))
-res, series = analyze(g, Params(tau_air_s=24*3600))
+res, series = analyze(g, Params())          # two-path ingress + asymmetric drying by default
 res["episodes"] = episodes(series)
 res["since_last_flight"] = since_last_flight(series, res)
+res["grounding_caution"] = grounding_caution(res["since_last_flight"])
 dewpoint_divergence_chart(series, "2026-03-16T12:00", "alert.png")
 ```
 
@@ -91,10 +99,13 @@ corrosion, condensation, time-of-wetness, and engine-preservation questions.
 
 ## Caveats
 
-- `tau_metal` and `tau_air` are modeled, not measured; a lifter-boss probe + crankcase
-  RH sensor would replace them directly.
+- `tau_metal`, `tau_bulk`, and `tau_event` are modeled, not measured; a lifter-boss probe
+  + crankcase RH sensor would replace them directly.
 - The bay sensor cannot see water dissolved in the oil — an internal humidity floor that
   only running the engine clears.
+- Flights are not distinguished from ground runs (the cowl sensor can't confirm oil
+  temperature, and is hung by hand after shutdown); the model trusts a diligent pilot to
+  fly long enough to boil moisture out.
 - Weather/VFR outputs in any downstream monitor are advisory; defer to a real preflight
   briefing.
 

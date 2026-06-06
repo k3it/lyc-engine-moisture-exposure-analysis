@@ -6,14 +6,26 @@ is computed from sensor readings (timestamp, temperature, relative humidity).
 
 Two inertias are modeled, both of which matter:
   1. METAL thermal inertia  - the cam/lifter steel lags air temperature (tau_metal).
-  2. AIR-EXCHANGE inertia    - the crankcase only breathes through restricted paths
-                               (breather tube dominant; intake plugged/filtered;
-                               exhaust tortuous), so interior humidity is a heavily
-                               low-pass-filtered version of ambient (tau_air).
+  2. AIR-EXCHANGE inertia    - the crankcase breathes through restricted paths, so
+                               interior humidity lags ambient. This is modeled as TWO
+                               PARALLEL PATHS, not one lag:
+                                 * slow BULK   (tau_bulk ~ days): diffusion + mean
+                                   thermal breathing; always on.
+                                 * fast EVENT  (tau_event ~ 1-2 h): wind/barometric
+                                   flushing of the open breather when a moist air mass
+                                   moves in. Gated on RISING ambient vapour pressure
+                                   (moist air arriving) - the condition under which a
+                                   cold cam meets fresh humid air and dews up. A single
+                                   lag cannot represent both timescales; the event path
+                                   is what lets the model SEE a frontal condensation
+                                   event instead of averaging it away.
 
 Condensation onto the cam occurs when the interior water-vapour pressure exceeds
 the saturation pressure at the (lagged) metal temperature. Wet metal -> corrosion;
 the standard metric is TIME-OF-WETNESS (hours the surface holds a film), not grams.
+Drying is ASYMMETRIC: water that drains off a lobe toward the oil (immiscible, denser)
+re-evaporates far slower than it condensed, so the film budget evaporates at
+dry_factor x the condensation rate.
 
 See references/METHODOLOGY.md for the derivation, constants, and caveats.
 """
@@ -24,13 +36,21 @@ from dataclasses import dataclass, asdict
 # ----------------------------- constants / defaults -----------------------------
 MAGNUS_A, MAGNUS_B, ES0 = 17.625, 243.04, 6.112      # Magnus coeffs; es0 in hPa
 TAU_METAL_S   = 8 * 3600     # cam/lifter thermal time constant (buried, conservative)
-TAU_AIR_S     = 24 * 3600    # interior air-exchange time constant (breather-dominated)
+# --- two-path interior air exchange (replaces the single tau_air low-pass) ---
+TAU_BULK_S    = 24 * 3600    # slow path: diffusion + mean thermal breathing (~1 day floor)
+TAU_EVENT_S   = 1.5 * 3600   # fast path: frontal/wind breather flush (hours)
+EVENT_REF_HPA_H = 1.0        # rising-vapour rate that fully opens the event path (hPa/h)
+TAU_AIR_S     = 24 * 3600    # LEGACY single-tau low-pass (only if Params.two_path=False)
+DRY_FACTOR    = 0.3          # film evaporation rate / condensation rate (<1, asymmetric)
 HM            = 0.003        # mass-transfer coefficient, enclosed nat. convection (m/s)
 FILM_CAP_GM2  = 15.0         # max film before gravity drainage off lobes (g/m^2)
 WET_AREA_M2   = 0.30         # internal wetted steel (cam+lifters+lower case) (m^2)
 CRANKCASE_V   = 0.010        # crankcase free-gas volume (m^3)
 FLIGHT_TEMP_C = 40.0         # cowl-air temp above this => engine was run (resets clock)
 RICH_H2O_FRAC = 0.15         # rich-shutdown exhaust water fraction (vol) - informational
+# Conditional grounding caution (improves on Lycoming's blanket 'fly monthly'):
+FLIGHT_LIMIT_D  = 30         # days grounded that count as 'a month on the ground'
+WET_CAUTION_H   = 8.0        # time-of-wetness since last flight that makes grounding matter
 
 # ----------------------------- psychrometrics -----------------------------------
 def esat_hpa(t_c):
@@ -59,6 +79,34 @@ def first_order_lag(x, tau_s, dt_s=60.0):
     for i in range(1, len(x)):
         y[i] = y[i-1] + k * (x[i-1] - y[i-1])
     return y
+
+def two_path_eint(e_ext, dt_s=60.0, tau_bulk_s=TAU_BULK_S, tau_event_s=TAU_EVENT_S,
+                  event_ref_hpa_h=EVENT_REF_HPA_H, smooth_s=1800.0):
+    """Interior vapour pressure via TWO parallel ingress paths (see module header).
+
+    A slow bulk path (always on) plus a fast event path that opens only while ambient
+    vapour pressure is RISING - i.e. a moist air mass is moving in, the moment a cold
+    cam is exposed to fresh humid air. The gate is the rising-vapour rate normalized by
+    event_ref; it is 0 when ambient is drying (no fast ingress) and saturates at 1
+    during a strong moist front.
+
+        g(t)   = clip( (d e_ext/dt)_+ / event_ref , 0, 1 )
+        k(t)   = dt/tau_bulk + (dt/tau_event) * g(t)
+        e_int += k(t) * (e_ext_prev - e_int)
+
+    Reduces to the slow bulk lag when nothing is changing; approaches instant ingress
+    during a front. The d/dt is taken on a lightly smoothed e_ext to suppress sensor
+    jitter. Returns e_int (hPa), same length as e_ext.
+    """
+    e = np.asarray(e_ext, float)
+    de = np.gradient(first_order_lag(e, smooth_s, dt_s)) * (3600.0 / dt_s)  # hPa/h
+    gate = np.clip(de / event_ref_hpa_h, 0.0, 1.0)
+    k_b, k_e = dt_s / tau_bulk_s, dt_s / tau_event_s
+    out = np.empty_like(e); out[0] = e[0]
+    for i in range(1, len(e)):
+        k = min(1.0, k_b + k_e * gate[i])      # clamp for numerical stability
+        out[i] = out[i-1] + k * (e[i-1] - out[i-1])
+    return out
 
 # ----------------------------- data loading --------------------------------------
 def load_csv(path):
@@ -95,11 +143,16 @@ def regrid(df, max_gap_min=60):
 @dataclass
 class Params:
     tau_metal_s: float = TAU_METAL_S
-    tau_air_s:   float = TAU_AIR_S
+    tau_bulk_s:  float = TAU_BULK_S        # two-path: slow bulk ingress (days)
+    tau_event_s: float = TAU_EVENT_S       # two-path: fast frontal-flush ingress (hours)
+    event_ref_hpa_h: float = EVENT_REF_HPA_H
+    dry_factor:  float = DRY_FACTOR        # asymmetric film drying (<1)
     hm:          float = HM
     film_cap:    float = FILM_CAP_GM2
     wet_area_m2: float = WET_AREA_M2
     flight_temp_c: float = FLIGHT_TEMP_C
+    two_path:    bool = True               # False -> legacy single-tau low-pass
+    tau_air_s:   float = TAU_AIR_S         # legacy single-tau (used iff two_path=False)
 
 def analyze(g: pd.DataFrame, p: Params = Params()):
     """Run the full model on a regridded frame. Returns a dict of results plus
@@ -112,8 +165,11 @@ def analyze(g: pd.DataFrame, p: Params = Params()):
     Tm = first_order_lag(T, p.tau_metal_s, dt)
     # interior vapour pressure (air-exchange inertia on the transported quantity)
     e_ext = vapour_pressure_hpa(T, RH)
-    e_int = first_order_lag(e_ext, p.tau_air_s, dt)
-    e_int_inst = e_ext                     # tau_air = 0 upper bound ("how damp ambient is")
+    if p.two_path:
+        e_int = two_path_eint(e_ext, dt, p.tau_bulk_s, p.tau_event_s, p.event_ref_hpa_h)
+    else:
+        e_int = first_order_lag(e_ext, p.tau_air_s, dt)
+    e_int_inst = e_ext                     # instant ingress upper bound ("how damp ambient is")
 
     es_m = esat_hpa(Tm)                     # saturation vp at metal temp
     wet_real = e_int > es_m                 # realistic: interior moisture reaches cam
@@ -127,7 +183,9 @@ def analyze(g: pd.DataFrame, p: Params = Params()):
     film = np.zeros_like(T)
     cond_mass_gm2 = 0.0
     for i in range(1, len(T)):
-        film[i] = min(p.film_cap, max(0.0, film[i-1] + flux[i]))
+        # asymmetric drying: water drained toward the oil evaporates slower than it condensed
+        f = flux[i] if flux[i] >= 0 else flux[i] * p.dry_factor
+        film[i] = min(p.film_cap, max(0.0, film[i-1] + f))
         if flux[i] > 0:
             cond_mass_gm2 += flux[i]
     film_present = film > 0.1
@@ -195,6 +253,38 @@ def since_last_flight(series, res):
                    "RH": round(float(s["RH"].iloc[-1]))},
     }
 
+def grounding_caution(slf, wet_caution_h=WET_CAUTION_H, flight_limit_d=FLIGHT_LIMIT_D):
+    """A condensation-aware improvement on Lycoming's blanket 'fly at least monthly'.
+
+    Lycoming's rule is a worst-case, geography-blind guideline written for pilots with
+    no condensation data: it assumes any month grounded is risky. With actual exposure
+    tracked we can do better - a quiet month in a dry spell does NOT warrant a nag. The
+    caution fires only when a month on the ground FOLLOWED real wetting:
+
+        caution  <=>  (time-of-wetness since last flight >= wet_caution_h)
+                 AND  (days since last flight       >= flight_limit_d)
+
+    This is the 'fly smarter, not just more often' case: a timely flight right after a
+    condensation spell purges the water before it sits. (Oil-acid aging is a separate
+    calendar matter and is left to the pilot's own oil-change schedule - not modeled.)
+
+    slf: the since_last_flight() result.
+    """
+    days = slf.get("days")
+    wet  = slf.get("film_hours")            # time-of-wetness since last flight
+    grounded = days is not None and days >= flight_limit_d
+    wetted   = wet is not None and wet >= wet_caution_h
+    fire = bool(grounded and wetted)
+    return {
+        "caution": fire,
+        "days_grounded": days,
+        "wet_hours_since_flight": wet,
+        "flight_limit_days": flight_limit_d,
+        "wet_caution_hours": wet_caution_h,
+        "reason": (f"{wet:.1f} h of wetting then {days:.0f} d grounded "
+                   f"(no purge flight)") if fire else None,
+    }
+
 def combustion_water_per_shutdown_g(volume_l=5.24, shutdown_c=90, cool_c=10):
     """Informational: one-shot trapped combustion water that can condense on cooldown."""
     R, P = 8.314, 101325.0
@@ -212,14 +302,27 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Engine cam-moisture exposure model")
     ap.add_argument("csv", help="X-Sense CSV export (time, temp F, RH %)")
     ap.add_argument("--tau-metal-h", type=float, default=TAU_METAL_S/3600)
-    ap.add_argument("--tau-air-h", type=float, default=TAU_AIR_S/3600)
+    ap.add_argument("--tau-bulk-h", type=float, default=TAU_BULK_S/3600,
+                    help="slow bulk-ingress time constant (hours)")
+    ap.add_argument("--tau-event-h", type=float, default=TAU_EVENT_S/3600,
+                    help="fast frontal-flush ingress time constant (hours)")
+    ap.add_argument("--dry-factor", type=float, default=DRY_FACTOR,
+                    help="film evaporation/condensation rate ratio (<1)")
+    ap.add_argument("--single-tau-h", type=float, default=None,
+                    help="use the legacy single-tau low-pass instead of two-path")
     ap.add_argument("--json", action="store_true", help="emit JSON only")
     a = ap.parse_args()
-    p = Params(tau_metal_s=a.tau_metal_h*3600, tau_air_s=a.tau_air_h*3600)
+    if a.single_tau_h is not None:
+        p = Params(tau_metal_s=a.tau_metal_h*3600, two_path=False,
+                   tau_air_s=a.single_tau_h*3600, dry_factor=a.dry_factor)
+    else:
+        p = Params(tau_metal_s=a.tau_metal_h*3600, tau_bulk_s=a.tau_bulk_h*3600,
+                   tau_event_s=a.tau_event_h*3600, dry_factor=a.dry_factor)
     g = regrid(load_csv(a.csv))
     res, series = analyze(g, p)
     res["episodes"] = episodes(series)
     res["since_last_flight"] = since_last_flight(series, res)
+    res["grounding_caution"] = grounding_caution(res["since_last_flight"])
     res["combustion_water_per_shutdown_g"] = round(combustion_water_per_shutdown_g(), 2)
     if a.json:
         print(json.dumps(res, indent=2)); sys.exit(0)
@@ -231,5 +334,7 @@ if __name__ == "__main__":
     print(f"Flights detected    : {res['flight_count']}  last {res['last_flight']}")
     slf = res["since_last_flight"]
     print(f"Since last flight   : {slf['days']} d, realistic wet {slf['wet_hours_realistic']} h, "
-          f"ambient-damp {slf['ambient_damp_hours_ub']} h")
+          f"film(wetness) {slf['film_hours']} h, ambient-damp {slf['ambient_damp_hours_ub']} h")
+    gc = res["grounding_caution"]
+    print(f"Grounding caution   : {'YES - ' + gc['reason'] if gc['caution'] else 'no'}")
     print(f"Episodes (>=0.5h)   : {len(res['episodes'])}")
