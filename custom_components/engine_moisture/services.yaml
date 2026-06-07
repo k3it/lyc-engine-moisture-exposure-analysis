@@ -12,3 +12,16 @@ run_now:
       default: false
       selector:
         boolean:
+    chart_history_days:
+      name: Chart lookback (days)
+      description: >-
+        Override the alert chart's history window for this run only. Leave blank to
+        use the configured "Alert chart history (days)" option.
+      required: false
+      selector:
+        number:
+          min: 7
+          max: 180
+          step: 1
+          unit_of_measurement: d
+          mode: box

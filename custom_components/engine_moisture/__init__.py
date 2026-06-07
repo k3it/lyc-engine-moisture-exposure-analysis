@@ -20,7 +20,14 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
 
-from .const import ATTR_FORCE, CONF_SCRIPTS_DIR, DOMAIN, PLATFORMS, SERVICE_RUN_NOW
+from .const import (
+    ATTR_CHART_DAYS,
+    ATTR_FORCE,
+    CONF_SCRIPTS_DIR,
+    DOMAIN,
+    PLATFORMS,
+    SERVICE_RUN_NOW,
+)
 from .coordinator import EngineMoistureCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -92,13 +99,18 @@ def _async_register_services(hass: HomeAssistant) -> None:
 
     async def _handle_run_now(call: ServiceCall) -> None:
         force = bool(call.data.get(ATTR_FORCE, False))
+        chart_days = call.data.get(ATTR_CHART_DAYS)
         coordinators = list(hass.data.get(DOMAIN, {}).values())
         for coordinator in coordinators:
-            await coordinator.async_run_now(force=force)
+            await coordinator.async_run_now(force=force, chart_history_days=chart_days)
 
     hass.services.async_register(
         DOMAIN,
         SERVICE_RUN_NOW,
         _handle_run_now,
-        schema=vol.Schema({vol.Optional(ATTR_FORCE, default=False): cv.boolean}),
+        schema=vol.Schema({
+            vol.Optional(ATTR_FORCE, default=False): cv.boolean,
+            vol.Optional(ATTR_CHART_DAYS): vol.All(
+                vol.Coerce(int), vol.Range(min=7, max=180)),
+        }),
     )

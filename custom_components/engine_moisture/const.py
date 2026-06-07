@@ -24,6 +24,7 @@ CONF_SCRIPTS_DIR = "scripts_dir"
 # ---- service ----
 SERVICE_RUN_NOW = "run_now"
 ATTR_FORCE = "force"
+ATTR_CHART_DAYS = "chart_history_days"
 
 # ---- GUI-adjustable options (keys match scripts/pipeline cfg) ----
 # Quiet hours are split into two numeric fields for the GUI and reassembled into the

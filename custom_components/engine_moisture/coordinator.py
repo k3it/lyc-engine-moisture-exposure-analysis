@@ -98,16 +98,24 @@ class EngineMoistureCoordinator(DataUpdateCoordinator):
         await self._store.async_save(self._state)
 
     # ---- public trigger ----
-    async def async_run_now(self, force: bool = False) -> None:
-        """Manual trigger (engine_moisture.run_now). force bypasses thresholds/quiet/cooldown."""
+    async def async_run_now(
+        self, force: bool = False, chart_history_days: int | None = None
+    ) -> None:
+        """Manual trigger (engine_moisture.run_now). force bypasses thresholds/quiet/
+        cooldown; chart_history_days overrides the chart lookback for this run only."""
         self._force_alert = force
+        self._chart_days_override = chart_history_days
         await self.async_refresh()
 
     # ---- main cycle ----
     async def _async_update_data(self) -> dict[str, Any]:
         force = getattr(self, "_force_alert", False)
         self._force_alert = False
+        chart_days_override = getattr(self, "_chart_days_override", None)
+        self._chart_days_override = None
         cfg = self._build_cfg()
+        if chart_days_override:
+            cfg["chart_history_days"] = int(chart_days_override)
 
         now_local = dt_util.now().replace(tzinfo=None)
         fetch_days = self._fetch_days(cfg, now_local)

@@ -65,6 +65,10 @@
         "force": {
           "name": "Force notification",
           "description": "Send the nudge even if thresholds/quiet-hours/cooldown would suppress it."
+        },
+        "chart_history_days": {
+          "name": "Chart lookback (days)",
+          "description": "Override the alert chart's history window for this run only. Leave blank to use the configured option."
         }
       }
     }
