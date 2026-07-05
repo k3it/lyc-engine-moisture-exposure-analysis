@@ -47,6 +47,7 @@
           "gapfill_enabled": "Gap-fill from airport station when the cowl sensor is stale",
           "gapfill_stale_min": "Gap-fill: sensor stale after (minutes)",
           "transfer_params_path": "Gap-fill: station→cowl transfer fit JSON (blank = repo data/<icao>_cowl_transfer.json)",
+          "backup_airport_icao": "Gap-fill: backup AWOS ICAO (last resort if the primary station has no data too; blank = none)",
           "forecast_horizon_days": "Forecast horizon (days)",
           "chart_history_days": "Alert chart history (days)",
           "quiet_start": "Quiet hours start (local hour)",

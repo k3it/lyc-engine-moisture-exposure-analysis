@@ -93,6 +93,11 @@ conservative near-saturation RH bump — see the
 [backtest report](reports/cowl_station_backtest.md)), and surfaced as a
 `Cowl sensor offline` problem entity in Home Assistant.
 
+If the primary station's feed is *also* down for part of the outage, an optional backup
+AWOS (`backup_airport_icao`) is tried as a last resort for the still-uncovered spans.
+Anything no station covers stays unfilled and is reported as UNKNOWN, not zero — the
+tally never silently invents dry hours.
+
 ## Files
 
 | File | Purpose |

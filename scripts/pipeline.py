@@ -72,6 +72,7 @@ DEFAULTS = {
     "gapfill_spinup_h": 24,         # extra station history before a gap to settle the lags
     "gapfill_rh_margin_pct": 5.0,   # conservative RH bump on synthesized near-saturation air
     "transfer_params_path": None,   # saved fit_transfer JSON; hosts derive <repo>/data/... if unset
+    "backup_airport_icao": None,    # last-resort nearby AWOS when the primary has no data too
 }
 
 
@@ -176,7 +177,7 @@ def find_sensor_gaps(g, now_local, stale_min):
     return gaps
 
 
-def apply_gapfill(g, cfg, now_local, station_df=None):
+def apply_gapfill(g, cfg, now_local, station_df=None, backup_station_df=None):
     """Replace sensor outages with the station->cowl transfer model.
 
     Detects data holes and a stale tail in the regridded frame, pulls station METAR
@@ -186,24 +187,34 @@ def apply_gapfill(g, cfg, now_local, station_df=None):
     conservative +gapfill_rh_margin_pct bump near saturation, where the backtest showed
     the reconstruction reads ~5% low (reports/cowl_station_backtest.md).
 
-    The fill can only reach as far as the station has obs — if the ASOS feed itself
-    went down (or a source was unreachable) the remainder of the gap stays empty.
-    That partial coverage is reported, not hidden: info['unfilled_minutes'] counts the
-    gap minutes no estimate could cover, info['warning'] is set when that exceeds the
-    stale threshold, and info['sources'] carries each source's outcome.
+    LAST RESORT — backup station: when the primary AWOS (airport_icao) also has no data
+    over part of the outage (its ASOS feed was down too), and backup_airport_icao is set,
+    the spans the primary couldn't cover are retried against that ONE nearby station.
+    The backup only supplies ambient T/Td/cloud; the transfer fit (hangar lag, greenhouse,
+    solar geometry) is unchanged, so the backup must be close enough that its weather
+    stands in for the primary's. Only one backup is attempted.
+
+    The fill can only reach as far as some station has obs — if neither the primary nor
+    the backup covers a span it stays empty. That partial coverage is reported, not
+    hidden: info['unfilled_minutes'] counts the gap minutes no estimate could cover,
+    info['warning'] is set when that exceeds the stale threshold, and info['sources']
+    carries each station/source's outcome.
 
     Returns (frame, info). Never raises: on any failure the original frame comes back
     with info['error'] set, so a broken fallback cannot take the monitor down with it.
-    station_df: pre-fetched station history (naive-UTC [T, Td, cloud]) for tests/CLI.
+    station_df / backup_station_df: pre-fetched history (naive-UTC [T, Td, cloud]) for
+    tests/CLI, bypassing the network for the primary / backup respectively.
     """
     info = {"filled_minutes": 0, "unfilled_minutes": 0, "gaps": [], "stale": False,
-            "error": None, "warning": None, "source": None, "sources": {}}
+            "error": None, "warning": None, "source": None, "sources": {},
+            "backup_source": None, "backup_filled_minutes": 0}
     out = g.copy()
     out["estimated"] = False
     if not len(g) or not cfg.get("gapfill_enabled", True):
         return out, info
     try:
-        gaps = find_sensor_gaps(g, now_local, int(cfg.get("gapfill_stale_min", 90)))
+        stale_min = int(cfg.get("gapfill_stale_min", 90))
+        gaps = find_sensor_gaps(g, now_local, stale_min)
         if not gaps:
             return out, info
         info["gaps"] = [(s.isoformat(), e.isoformat()) for s, e in gaps]
@@ -225,40 +236,79 @@ def apply_gapfill(g, cfg, now_local, station_df=None):
                     .tz_convert("UTC").tz_localize(None))
 
         spin = pd.Timedelta(hours=float(cfg.get("gapfill_spinup_h", 24)))
-        metar = station_df if station_df is not None else gf.fetch_station_history(
-            cfg["airport_icao"], to_utc(gaps[0][0]) - spin, to_utc(gaps[-1][1]),
-            status=info["sources"])
-        if metar is None or not len(metar):
+        rh_margin = float(cfg.get("gapfill_rh_margin_pct", 5.0))
+
+        def _station_estimate(station, prefetched, start_utc, end_utc):
+            """Fetch a station's obs and turn them into a local-time, 1-min, RH-nudged
+            cowl estimate through the (hangar) transfer. Returns (frame|None, last_ob)."""
+            skey = str(station).upper()
+            metar = prefetched if prefetched is not None else gf.fetch_station_history(
+                station, start_utc, end_utc,
+                status=info["sources"].setdefault(skey, {}))
+            if metar is None or not len(metar):
+                return None, None
+            syn = gf.synthesize_cowl(metar, params)      # 10-min frame, naive-UTC index
+            syn.index = syn.index.tz_localize("UTC").tz_convert(tz).tz_localize(None)
+            syn = syn[~syn.index.duplicated(keep="last")].sort_index()
+            syn1 = syn[["Tc", "RH"]].resample("1min").mean().interpolate(limit=15)
+            near = syn1["RH"] >= 80.0
+            syn1.loc[near, "RH"] = (syn1.loc[near, "RH"] + rh_margin).clip(upper=100.0)
+            return syn1, metar.index.max()
+
+        def _splice(frame, syn1, spans):
+            """Add syn1's estimate over `spans` into `frame` for minutes not already
+            present (real data and earlier fills win). Returns (frame, minutes_added)."""
+            if syn1 is None:
+                return frame, 0
+            parts = [syn1.loc[s:e] for s, e in spans]
+            fill = pd.concat(parts).dropna() if parts else syn1.iloc[:0]
+            fill = fill[~fill.index.isin(frame.index)]
+            if not len(fill):
+                return frame, 0
+            fill = fill.copy()
+            fill["estimated"] = True
+            return pd.concat([frame, fill]).sort_index(), int(len(fill))
+
+        # --- primary station over the whole outage ---
+        prim, prim_last = _station_estimate(
+            cfg["airport_icao"], station_df,
+            to_utc(gaps[0][0]) - spin, to_utc(gaps[-1][1]))
+        if prim_last is not None:
+            info["station_last_ob_utc"] = prim_last.isoformat()
+        out, added = _splice(out, prim, gaps)
+        info["filled_minutes"] += added
+
+        # --- backup station (last resort) for spans the primary couldn't cover ---
+        backup = str(cfg.get("backup_airport_icao") or "").strip()
+        remaining = find_sensor_gaps(out, now_local, stale_min)
+        if backup and remaining and backup.upper() != str(cfg["airport_icao"]).upper():
+            bstart = to_utc(min(s for s, _ in remaining)) - spin
+            bend = to_utc(max(e for _, e in remaining))
+            bfill, blast = _station_estimate(backup, backup_station_df, bstart, bend)
+            out, badded = _splice(out, bfill, remaining)
+            if badded:
+                info["backup_source"] = backup
+                info["backup_filled_minutes"] = badded
+                info["filled_minutes"] += badded
+                if blast is not None:
+                    info["backup_last_ob_utc"] = blast.isoformat()
+
+        if not info["filled_minutes"]:
             info["error"] = ("no station data available for the gap window; sources: "
                              f"{info['sources']}")
-            return out, info
-        info["station_last_ob_utc"] = metar.index.max().isoformat()
+            return g.assign(estimated=False), info
 
-        syn = gf.synthesize_cowl(metar, params)          # 10-min frame, naive-UTC index
-        syn.index = syn.index.tz_localize("UTC").tz_convert(tz).tz_localize(None)
-        syn = syn[~syn.index.duplicated(keep="last")].sort_index()
-        syn1 = syn[["Tc", "RH"]].resample("1min").mean().interpolate(limit=15)
-        near = syn1["RH"] >= 80.0
-        syn1.loc[near, "RH"] = (syn1.loc[near, "RH"]
-                                + float(cfg.get("gapfill_rh_margin_pct", 5.0))).clip(upper=100.0)
-        fill = pd.concat([syn1.loc[s:e] for s, e in gaps]).dropna()
-        fill = fill[~fill.index.isin(out.index)]
-        if not len(fill):
-            info["error"] = "station data does not cover the sensor gap"
-            return out, info
-        fill["estimated"] = True
-        out = pd.concat([out, fill]).sort_index()
-        info["filled_minutes"] = int(len(fill))
         info["source"] = str(cfg["airport_icao"])
-        # honest coverage accounting: a station outage (or a dead source) leaves part
-        # of the gap unfillable — surface that instead of implying a complete fill
+        # honest coverage accounting: an outage at every station leaves part of the gap
+        # unfillable — surface that instead of implying a complete fill
         want = int(sum((e - s).total_seconds() / 60 + 1 for s, e in gaps))
         info["unfilled_minutes"] = max(0, want - info["filled_minutes"])
-        if info["unfilled_minutes"] > int(cfg.get("gapfill_stale_min", 90)):
+        if info["unfilled_minutes"] > stale_min:
+            tried = "/".join(info["sources"].keys()) or info["source"]
             info["warning"] = (
                 f"station data covered only part of the sensor gap "
-                f"({round(info['unfilled_minutes'] / 60, 1)} h unfilled; last station ob "
-                f"{info.get('station_last_ob_utc')}Z; sources: {info['sources']})")
+                f"({round(info['unfilled_minutes'] / 60, 1)} h unfilled; last primary ob "
+                f"{info.get('station_last_ob_utc')}Z; stations tried: {tried})")
         return out, info
     except Exception as err:  # noqa: BLE001 - fallback must never kill the cycle
         info["error"] = f"{type(err).__name__}: {err}"
@@ -271,6 +321,9 @@ def gapfill_note(info):
         return None
     h = round(info["filled_minutes"] / 60, 1)
     src = info.get("source") or "station"
+    if info.get("backup_source"):
+        bh = round(info.get("backup_filled_minutes", 0) / 60, 1)
+        src = f"{src} (+ backup {info['backup_source']} {bh} h)"
     tail = " Cowl sensor is currently offline." if info.get("stale") else ""
     if info.get("warning"):
         uh = round(info.get("unfilled_minutes", 0) / 60, 1)

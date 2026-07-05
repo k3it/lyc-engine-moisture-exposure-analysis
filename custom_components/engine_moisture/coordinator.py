@@ -243,6 +243,7 @@ class EngineMoistureCoordinator(DataUpdateCoordinator):
             "sensor_stale": bool(gap_info.get("stale")),
             "gap_filled_hours": round(gap_info.get("filled_minutes", 0) / 60, 1),
             "gap_unfilled_hours": round(gap_info.get("unfilled_minutes", 0) / 60, 1),
+            "gap_backup_station": gap_info.get("backup_source"),
             "gapfill_error": gap_info.get("error") or gap_info.get("warning"),
             "last_real_reading": self._last_real_reading(g),
         }

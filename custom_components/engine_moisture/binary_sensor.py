@@ -95,6 +95,7 @@ class SensorStaleBinarySensor(
         return {
             "gap_filled_hours": data.get("gap_filled_hours"),
             "gap_unfilled_hours": data.get("gap_unfilled_hours"),
+            "gap_backup_station": data.get("gap_backup_station"),
             "gapfill_error": data.get("gapfill_error"),
             "last_real_reading": data.get("last_real_reading"),
         }
