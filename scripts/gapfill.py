@@ -150,24 +150,36 @@ def fetch_live_metar_history(station, hours=72, timeout=30):
     df = df.sort_index()
     return df[~df.index.duplicated(keep="last")]
 
-def fetch_station_history(station, start_utc, end_utc):
+def fetch_station_history(station, start_utc, end_utc, status=None):
     """Best-effort station obs [T, Td, cloud] (naive-UTC index) covering
     [start_utc, end_utc]: the Iowa Mesonet ASOS archive (any span, near-real-time)
     topped up with the aviationweather.gov live METAR cache for the freshest obs.
-    Returns None if neither source yielded data."""
+    Returns None if neither source yielded data.
+
+    status: optional dict; filled with a per-source outcome string ('N obs' or the
+    failure) so callers can report WHY coverage was partial when a fill comes up
+    short (station outage vs. an unreachable source look identical otherwise)."""
     s, e = pd.Timestamp(start_utc), pd.Timestamp(end_utc)
+    status = status if status is not None else {}
     frames = []
     try:
-        frames.append(fetch_metar_archive(station, s, e + pd.Timedelta(days=1)))
+        got = fetch_metar_archive(station, s, e + pd.Timedelta(days=1))
+        status["mesonet"] = f"{len(got)} obs to {got.index.max()}Z"
+        frames.append(got)
     except MetarDownloadBlocked:
-        pass
+        status["mesonet"] = "unreachable"
+    except Exception as err:  # noqa: BLE001
+        status["mesonet"] = f"{type(err).__name__}: {err}"
     try:
         span_h = max(6.0, (e - s).total_seconds() / 3600 + 1)
         live = fetch_live_metar_history(station, hours=min(96, int(span_h)))
         if live is not None:
+            status["aviationweather"] = f"{len(live)} obs to {live.index.max()}Z"
             frames.append(live)
-    except Exception:
-        pass
+        else:
+            status["aviationweather"] = "no data returned"
+    except Exception as err:  # noqa: BLE001
+        status["aviationweather"] = f"{type(err).__name__}: {err}"
     if not frames:
         return None
     df = pd.concat(frames).sort_index()

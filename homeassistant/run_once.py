@@ -162,6 +162,8 @@ def main():
     elif gap_info.get("filled_minutes"):
         print(f"  gap-fill: {gap_info['filled_minutes']} min synthesized from "
               f"{gap_info['source']} (sensor stale: {gap_info['stale']})")
+    if gap_info.get("warning"):
+        print(f"  ! gap-fill partial: {gap_info['warning']}")
 
     res, series = mm.run_model(g, cfg)
     last_flight, is_new = mm.reconcile_last_flight(res, series, state.get("last_flight"), cfg)
