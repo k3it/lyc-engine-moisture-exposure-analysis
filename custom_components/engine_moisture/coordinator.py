@@ -86,6 +86,12 @@ class EngineMoistureCoordinator(DataUpdateCoordinator):
         www = cfg.get("www_dir")
         if not www or www == "/homeassistant/www/moisture":
             cfg["www_dir"] = self.hass.config.path("www", "moisture")
+        # Station->cowl transfer fit for the sensor gap-fill fallback. Default to the
+        # repo's saved fit next to scripts/ (data/<icao>_cowl_transfer.json).
+        if not cfg.get("transfer_params_path"):
+            cfg["transfer_params_path"] = os.path.join(
+                os.path.dirname(self.scripts_dir), "data",
+                f"{str(cfg.get(CONF_AIRPORT, 'kmrb')).lower()}_cowl_transfer.json")
         return cfg
 
     # ---- state persistence ----
@@ -195,6 +201,17 @@ class EngineMoistureCoordinator(DataUpdateCoordinator):
         if g is None:
             return None
 
+        # Sensor gap-fill fallback: replace stale/offline cowl data with the buffered
+        # station estimate (never raises; on failure the raw frame is used as-is).
+        g, gap_info = pl.apply_gapfill(g, cfg, now_local)
+        if gap_info.get("error"):
+            _LOGGER.warning("sensor gap-fill unavailable (%s gap(s) NOT filled): %s",
+                            len(gap_info.get("gaps") or []), gap_info["error"])
+        elif gap_info.get("filled_minutes"):
+            _LOGGER.info("sensor gap-fill: %s min synthesized from %s (stale tail: %s)",
+                         gap_info["filled_minutes"], gap_info.get("source"),
+                         gap_info.get("stale"))
+
         res, series = pl.run_model(g, cfg)
         last_flight, is_new = pl.reconcile_last_flight(res, series, state.get("last_flight"), cfg)
         nw = pl.near_wet_stats(series, res, cfg["close_call_margin_c"])
@@ -221,12 +238,22 @@ class EngineMoistureCoordinator(DataUpdateCoordinator):
             "gc_wet_hours": gc.get("wet_hours_since_flight"),
             "gc_days_grounded": gc.get("days_grounded"),
             "alert_reason": reason,
+            "sensor_stale": bool(gap_info.get("stale")),
+            "gap_filled_hours": round(gap_info.get("filled_minutes", 0) / 60, 1),
+            "gapfill_error": gap_info.get("error"),
+            "last_real_reading": self._last_real_reading(g),
         }
         # keep res/series for the alert path (same process; not stored on the entity)
         return {
-            "data": data, "res": res, "series": series, "nw": nw,
+            "data": data, "res": res, "series": series, "nw": nw, "gap_info": gap_info,
             "last_flight": last_flight, "is_new_flight": is_new, "fire": fire,
         }
+
+    @staticmethod
+    def _last_real_reading(g):
+        """Timestamp of the newest non-synthesized sample in the model frame."""
+        real = g.index[~g["estimated"]] if "estimated" in g.columns else g.index
+        return real[-1].isoformat() if len(real) else None
 
     # ---- alerting ----
     async def _send_alert(self, cfg, out, now_local) -> bool:
@@ -237,7 +264,7 @@ class EngineMoistureCoordinator(DataUpdateCoordinator):
         chart_path = await self.hass.async_add_executor_job(
             self._render_chart, cfg, out["series"], out["res"], out["nw"])
         moisture_line = await self.hass.async_add_executor_job(
-            self._moisture_line, cfg, out["res"], out["series"], out["nw"])
+            self._moisture_line, cfg, out)
 
         import pipeline as pl
         text = pl.assemble_message(moisture_line, window_line)
@@ -252,9 +279,12 @@ class EngineMoistureCoordinator(DataUpdateCoordinator):
             cfg[CONF_AIRPORT], cfg[CONF_LAT], cfg[CONF_LON],
             cfg[CONF_TZ], int(cfg["forecast_horizon_days"]))
 
-    def _moisture_line(self, cfg, res, series, nw):
+    def _moisture_line(self, cfg, out):
         import pipeline as pl
-        return pl.moisture_status_line(res, series, cfg["close_call_margin_c"], nw)
+        line = pl.moisture_status_line(
+            out["res"], out["series"], cfg["close_call_margin_c"], out["nw"])
+        note = pl.gapfill_note(out.get("gap_info"))
+        return f"{line}\n{note}" if note else line
 
     def _render_chart(self, cfg, series, res, nw):
         try:

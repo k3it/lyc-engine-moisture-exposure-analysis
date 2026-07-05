@@ -121,6 +121,12 @@ def summary_chart(series, res, out, margin_c=2.0, history_days=75, days=None):
     ax.plot(t, s["Tm"], color=STEEL, lw=1.8, label="Cam metal temp")
     ax.plot(t, s["Td_int"], color=TEAL, lw=1.4, ls=(0, (5, 2)), label="Interior dew point")
     lo, hi = ax.get_ylim()
+    # gap-filled spans (sensor offline -> station transfer model) as a gray underlay
+    if "estimated" in s.columns:
+        est = s["estimated"].astype(bool).values
+        if est.any():
+            ax.fill_between(t, lo, hi, where=est, color=GRAY, alpha=0.20,
+                            label="Station-estimated (sensor gap)")
     ax.fill_between(t, lo, hi, where=cond, color=RUST, alpha=0.32,
                     label="At/below dew point (condensing)")
     ax.fill_between(t, lo, hi, where=close & ~cond, color=AMBER, alpha=0.22,

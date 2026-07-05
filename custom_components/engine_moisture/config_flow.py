@@ -84,6 +84,10 @@ def _options_schema(current: dict[str, Any]) -> vol.Schema:
         # grounding caution
         vol.Required("wet_caution_hours", default=d("wet_caution_hours")): _num(0, 240, 0.5, unit="h"),
         vol.Required("flight_limit_days", default=d("flight_limit_days")): _num(1, 365, 1, unit="d"),
+        # sensor gap-fill fallback
+        vol.Required("gapfill_enabled", default=d("gapfill_enabled")): selector.BooleanSelector(),
+        vol.Required("gapfill_stale_min", default=d("gapfill_stale_min")): _num(61, 1440, 1, unit="min"),
+        vol.Optional("transfer_params_path", default=d("transfer_params_path")): selector.TextSelector(),
         # weather / chart / message
         vol.Required("forecast_horizon_days", default=d("forecast_horizon_days")): _num(1, 7, 1, unit="d"),
         vol.Required("chart_history_days", default=d("chart_history_days")): _num(7, 180, 1, unit="d"),

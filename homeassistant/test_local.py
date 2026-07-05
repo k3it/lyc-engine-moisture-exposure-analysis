@@ -43,7 +43,86 @@ def approx(a, b, tol=0.5):
     return abs((a or 0) - (b or 0)) <= tol
 
 
+def gapfill_check():
+    """Offline check of the sensor gap-fill fallback (no CSV, no network).
+
+    Builds a synthetic cowl year-fraction, fits an (identity-ish) station->cowl
+    transfer on it, punches a 12 h hole in the middle and cuts the last 24 h off
+    (the 'sensor stopped reporting' case), then asserts apply_gapfill() detects both
+    gaps, splices the synthesized estimate back in flagged estimated=True, and that
+    the reconstruction tracks the truth. Station fetch is bypassed via station_df."""
+    import datetime as dt
+    import json
+    import numpy as np
+    from gapfill import fit_transfer
+    from model import esat_hpa, dewpoint_c
+
+    print("\n[gap-fill fallback: synthetic end-to-end]")
+    # --- synthetic truth on a naive-UTC 1-min grid (14 days) ---
+    idx = pd.date_range("2026-06-15", periods=14 * 24 * 60, freq="1min")
+    hours = (idx - idx[0]).total_seconds() / 3600
+    tc = 22 + 6 * np.sin(2 * np.pi * (hours - 9) / 24)
+    rh = 70 + 12 * np.sin(2 * np.pi * (hours - 3) / 24)
+    truth_utc = pd.DataFrame({"Tc": tc, "RH": rh}, index=idx)
+
+    # station = hourly obs of the same air (identity transfer; the real fit quality
+    # is validated by the backtest — this exercises the plumbing)
+    td = dewpoint_c(esat_hpa(truth_utc["Tc"].values)
+                    * np.clip(truth_utc["RH"].values, 1, 100) / 100)
+    metar = pd.DataFrame({"T": truth_utc["Tc"].values, "Td": td},
+                         index=idx).resample("1h").mean()
+    params = fit_transfer(truth_utc, metar)
+    pfile = Path(tempfile.mkdtemp(prefix="moisture_gapfill_")) / "transfer.json"
+    pfile.write_text(json.dumps(params))
+
+    # --- local-time frame with a 12 h hole and a 24 h stale tail ---
+    tz = "America/New_York"
+    local = truth_utc.copy()
+    local.index = local.index.tz_localize("UTC").tz_convert(tz).tz_localize(None)
+    now_local = local.index[-1]
+    hole_s = local.index[0] + pd.Timedelta(days=6)
+    hole_e = hole_s + pd.Timedelta(hours=12)
+    holed = local[~((local.index >= hole_s) & (local.index <= hole_e))]
+    holed = holed[holed.index <= now_local - pd.Timedelta(hours=24)]
+
+    cfg = dict(mm.DEFAULTS, timezone=tz, transfer_params_path=str(pfile))
+    gaps = mm.find_sensor_gaps(holed, now_local, cfg["gapfill_stale_min"])
+    assert len(gaps) == 2, f"expected hole + stale tail, got {gaps}"
+
+    filled, info = mm.apply_gapfill(holed, cfg, now_local, station_df=metar)
+    print(f"  gaps={info['gaps']}")
+    print(f"  filled_minutes={info['filled_minutes']} stale={info['stale']} "
+          f"error={info['error']}")
+    assert info["error"] is None, f"gap-fill errored: {info['error']}"
+    assert info["stale"] is True, "stale tail not flagged"
+    assert info["filled_minutes"] >= 0.8 * 36 * 60, "gaps not substantially filled"
+    est = filled["estimated"]
+    assert not est[est.index < hole_s].iloc[:-1].any(), "real rows flagged estimated"
+    assert est[(est.index > hole_s) & (est.index < hole_e)].all(), "hole rows not flagged"
+
+    # reconstruction should track the truth closely (identity transfer)
+    hole_syn = filled.loc[hole_s:hole_e, "Tc"]
+    hole_truth = local.loc[hole_syn.index, "Tc"]
+    rmse = float(np.sqrt(((hole_syn - hole_truth) ** 2).mean()))
+    print(f"  hole reconstruction Tc RMSE={rmse:.2f} °C")
+    assert rmse < 1.5, f"synthesized cowl temp off by {rmse:.2f} °C"
+
+    # model runs on the filled frame; the estimated mask reaches the chart
+    res, series = mm.run_model(filled, cfg)
+    assert "estimated" in series.columns and series["estimated"].any()
+    note = mm.gapfill_note(info)
+    print(f"  note: {note}")
+    assert note and "estimated" in note
+    import charts as ch
+    out = Path(tempfile.mkdtemp(prefix="moisture_gapfill_")) / "summary_gapfill.png"
+    p = ch.summary_chart(series, res, str(out), history_days=14)
+    assert os.path.getsize(p) > 1000
+    print(f"  chart with estimated shading: {p}")
+    print("  gap-fill fallback OK")
+
+
 def main(days=21):
+    gapfill_check()                        # synthetic; runs even without a CSV export
     cfg = dict(mm.DEFAULTS)
     csv = newest_csv()
     print(f"Using {os.path.basename(csv)}  (last {days} days)")

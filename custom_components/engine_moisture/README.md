@@ -46,6 +46,23 @@ them, never copies them. A `git pull` on the repo updates the model.
   shows ~2.5 months of history with each detected flight marked and the wet+close-hours
   line reset at every flight, so you can see how exposure built up and was purged.
 
+## Sensor gap-fill fallback (stale/offline cowl feed)
+
+If the cowl sensor stops reporting (lost Wi-Fi, dead battery, cloud outage), the model
+does **not** freeze on the last reading. Each cycle it looks for data holes and a stale
+tail (no data for more than `Gap-fill: sensor stale after`, default 90 min), pulls the
+airport station's METAR for the outage (Iowa Mesonet archive + aviationweather.gov live
+cache), pushes it through the fitted **station→cowl transfer** (hangar thermal lag,
+damping, solar gain — see `../../reports/cowl_station_backtest.md`), and splices the
+buffered estimate in, marked estimated. Estimated spans are shaded gray on the alert
+chart and called out in the Telegram text, and the exposure tally keeps counting through
+the outage.
+
+The transfer fit is read from `Gap-fill: station→cowl transfer fit JSON` (blank =
+`<repo>/data/<icao>_cowl_transfer.json`, which ships fitted for KMRB). For a different
+station/hangar, fit your own with `scripts/gapfill.py` (`fit_transfer`/`backtest`) and
+point the option at the saved JSON.
+
 ## Entities
 
 - `sensor.*_cam_wet_hours_since_last_flight` (film hours; attrs: days, realistic/UB
@@ -55,6 +72,8 @@ them, never copies them. A `git pull` on the repo updates the model.
 - `sensor.*_last_model_run` (diagnostic; + `last_alert`)
 - `binary_sensor.*_cam_grounding_caution` (data-aware "fly monthly"; attrs: reason, wet
   hours, days grounded)
+- `binary_sensor.*_cowl_sensor_offline` (on while running on the station gap-fill
+  estimate; attrs: gap-filled hours, last real reading, gap-fill error if any)
 
 ## Test it
 

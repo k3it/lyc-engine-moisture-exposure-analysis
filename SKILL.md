@@ -165,6 +165,11 @@ air, so raw METAR overstates swings and over-alerts. Instead use `scripts/gapfil
    to produce a buffered cowl estimate, mark those minutes `estimated=True`, and treat
    the resulting exposure as lower-confidence (widen alert thresholds or annotate).
 
+The live monitor does this automatically: `pipeline.apply_gapfill()` detects holes and
+a stale tail each cycle, fetches the station obs (`fetch_station_history`), synthesizes
+through the saved fit (`data/<icao>_cowl_transfer.json`), and splices the estimate in
+flagged `estimated=True` — shaded on the alert chart and noted in the alert copy.
+
 The fitted transfer represents a **hangared** aircraft (the hangar buffers outside air).
 If you present a buffered (hangared) result alongside an unbuffered (tiedown) one, label
 each scenario clearly and keep the numbers separate — see "Presenting results — READ FIRST".

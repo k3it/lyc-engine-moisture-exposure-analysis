@@ -59,6 +59,10 @@ OPTION_DEFAULTS = {
     # grounding caution
     "wet_caution_hours": 8.0,
     "flight_limit_days": 30,
+    # sensor gap-fill fallback (stale/offline cowl feed -> station transfer model)
+    "gapfill_enabled": True,
+    "gapfill_stale_min": 90,
+    "transfer_params_path": "",
     # weather / message
     "forecast_horizon_days": 7,
     CONF_QUIET_START: 22,

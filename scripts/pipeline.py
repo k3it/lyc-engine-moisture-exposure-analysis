@@ -65,6 +65,13 @@ DEFAULTS = {
     "ai_task_service": "ai_task/generate_data",
     "ai_task_entity": "ai_task.google_ai_task",
     "backfill_csv_glob": None,             # optional X-Sense CSV export(s) to seed history
+    # ---- sensor gap-fill fallback (stale/offline cowl feed -> station transfer model,
+    #      see SKILL.md 'Sensor gap-fill fallback' and reports/cowl_station_backtest.md) ----
+    "gapfill_enabled": True,
+    "gapfill_stale_min": 90,        # a data hole / stale tail longer than this gets filled
+    "gapfill_spinup_h": 24,         # extra station history before a gap to settle the lags
+    "gapfill_rh_margin_pct": 5.0,   # conservative RH bump on synthesized near-saturation air
+    "transfer_params_path": None,   # saved fit_transfer JSON; hosts derive <repo>/data/... if unset
 }
 
 
@@ -150,6 +157,106 @@ def build_frame(temp_states, rh_states, tz_name, temp_unit="F", backfill_df=None
     return g if len(g) else None
 
 
+def find_sensor_gaps(g, now_local, stale_min):
+    """Sensor outages in a 1-min regridded frame: internal holes (regrid only bridges
+    short gaps; longer ones drop out of the index) plus the STALE TAIL between the last
+    reading and now_local — the 'sensor stopped reporting' case. Returns a list of
+    (start, end) naive-local Timestamps, each spanning more than stale_min minutes."""
+    if g is None or not len(g):
+        return []
+    step = pd.Timedelta(minutes=1)
+    thresh = pd.Timedelta(minutes=stale_min)
+    gaps = []
+    deltas = g.index.to_series().diff()
+    for ts, d in deltas[deltas > thresh].items():
+        gaps.append((ts - d + step, ts - step))
+    end = pd.Timestamp(now_local).floor("min")
+    if end - g.index[-1] > thresh:
+        gaps.append((g.index[-1] + step, end))
+    return gaps
+
+
+def apply_gapfill(g, cfg, now_local, station_df=None):
+    """Replace sensor outages with the station->cowl transfer model.
+
+    Detects data holes and a stale tail in the regridded frame, pulls station METAR
+    covering them (Iowa Mesonet archive + aviationweather.gov live cache), pushes it
+    through the fitted hangar transfer (gapfill.synthesize_cowl) and splices the
+    BUFFERED estimate into the frame, marked estimated=True. Synthesized RH gets a
+    conservative +gapfill_rh_margin_pct bump near saturation, where the backtest showed
+    the reconstruction reads ~5% low (reports/cowl_station_backtest.md).
+
+    Returns (frame, info). Never raises: on any failure the original frame comes back
+    with info['error'] set, so a broken fallback cannot take the monitor down with it.
+    station_df: pre-fetched station history (naive-UTC [T, Td, cloud]) for tests/CLI.
+    """
+    info = {"filled_minutes": 0, "gaps": [], "stale": False, "error": None, "source": None}
+    out = g.copy()
+    out["estimated"] = False
+    if not len(g) or not cfg.get("gapfill_enabled", True):
+        return out, info
+    try:
+        gaps = find_sensor_gaps(g, now_local, int(cfg.get("gapfill_stale_min", 90)))
+        if not gaps:
+            return out, info
+        info["gaps"] = [(s.isoformat(), e.isoformat()) for s, e in gaps]
+        info["stale"] = gaps[-1][1] >= pd.Timestamp(now_local).floor("min")
+
+        import gapfill as gf  # sibling module; hosts put scripts/ on sys.path
+
+        params = gf.load_transfer_params(cfg.get("transfer_params_path") or "")
+        if params is None:
+            info["error"] = ("no station->cowl transfer params "
+                             "(fit one and set transfer_params_path)")
+            return out, info
+
+        tz = _local_tz(cfg["timezone"])
+
+        def to_utc(ts):
+            return (pd.Timestamp(ts)
+                    .tz_localize(tz, ambiguous=True, nonexistent="shift_forward")
+                    .tz_convert("UTC").tz_localize(None))
+
+        spin = pd.Timedelta(hours=float(cfg.get("gapfill_spinup_h", 24)))
+        metar = station_df if station_df is not None else gf.fetch_station_history(
+            cfg["airport_icao"], to_utc(gaps[0][0]) - spin, to_utc(gaps[-1][1]))
+        if metar is None or not len(metar):
+            info["error"] = "no station data available for the gap window"
+            return out, info
+
+        syn = gf.synthesize_cowl(metar, params)          # 10-min frame, naive-UTC index
+        syn.index = syn.index.tz_localize("UTC").tz_convert(tz).tz_localize(None)
+        syn = syn[~syn.index.duplicated(keep="last")].sort_index()
+        syn1 = syn[["Tc", "RH"]].resample("1min").mean().interpolate(limit=15)
+        near = syn1["RH"] >= 80.0
+        syn1.loc[near, "RH"] = (syn1.loc[near, "RH"]
+                                + float(cfg.get("gapfill_rh_margin_pct", 5.0))).clip(upper=100.0)
+        fill = pd.concat([syn1.loc[s:e] for s, e in gaps]).dropna()
+        fill = fill[~fill.index.isin(out.index)]
+        if not len(fill):
+            info["error"] = "station data does not cover the sensor gap"
+            return out, info
+        fill["estimated"] = True
+        out = pd.concat([out, fill]).sort_index()
+        info["filled_minutes"] = int(len(fill))
+        info["source"] = str(cfg["airport_icao"])
+        return out, info
+    except Exception as err:  # noqa: BLE001 - fallback must never kill the cycle
+        info["error"] = f"{type(err).__name__}: {err}"
+        return g.assign(estimated=False), info
+
+
+def gapfill_note(info):
+    """One short alert-copy sentence when part of the tally is synthesized, or None."""
+    if not info or not info.get("filled_minutes"):
+        return None
+    h = round(info["filled_minutes"] / 60, 1)
+    src = info.get("source") or "station"
+    tail = " Cowl sensor is currently offline." if info.get("stale") else ""
+    return (f"⚠️ {h} h estimated from {src} via the hangar transfer fit "
+            f"(cowl sensor gap).{tail}")
+
+
 def make_params(cfg):
     p = Params(
         tau_metal_s=cfg["tau_metal_h"] * 3600,
@@ -169,6 +276,8 @@ def make_params(cfg):
 def run_model(g, cfg):
     """Full model pass; returns (res, series). Mirrors model.py's CLI assembly."""
     res, series = analyze(g, make_params(cfg))
+    if "estimated" in g.columns:   # carry the gap-fill provenance mask for charts/copy
+        series["estimated"] = g["estimated"].astype(bool).values
     res["episodes"] = episodes(series)
     res["since_last_flight"] = since_last_flight(series, res)
     res["grounding_caution"] = grounding_caution(

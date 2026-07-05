@@ -82,6 +82,17 @@ print(backtest(cowl, metar)["oos"])               # out-of-sample fit quality
 If direct download is blocked (sandboxed Claude), `fetch_metar_archive()` raises with
 that URL so it can be handed to the user to download in a browser.
 
+**The live monitor applies this automatically.** Each cycle, `pipeline.apply_gapfill()`
+detects data holes and a stale tail (sensor offline > `gapfill_stale_min`, default
+90 min), pulls station METAR for the outage (Iowa Mesonet archive + the
+aviationweather.gov live cache), pushes it through the saved transfer fit
+([`data/kmrb_cowl_transfer.json`](data/kmrb_cowl_transfer.json)) and splices the
+buffered estimate in, flagged `estimated=True`. Synthesized spans are shaded on the
+alert chart, noted in the Telegram copy, counted toward the exposure tally (with a
+conservative near-saturation RH bump — see the
+[backtest report](reports/cowl_station_backtest.md)), and surfaced as a
+`Cowl sensor offline` problem entity in Home Assistant.
+
 ## Files
 
 | File | Purpose |
