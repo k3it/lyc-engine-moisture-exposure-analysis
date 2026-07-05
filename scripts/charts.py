@@ -104,6 +104,11 @@ def summary_chart(series, res, out, margin_c=2.0, history_days=75, days=None):
     _style()
     win = days if days is not None else history_days
     s = series.loc[series.index.max() - pd.Timedelta(days=win):] if win else series
+    # Reindex onto a full 1-min grid so any minutes with NO data (sensor offline AND
+    # no station estimate) plot as NaN -> the lines BREAK there instead of drawing a
+    # false connector across the hole. NaN comparisons below are False, so unknown
+    # time never counts as condensing/close-call/exposure either.
+    s = s.reindex(pd.date_range(s.index[0], s.index[-1], freq="1min"))
     t = s.index
     gap = (s["Td_int"] - s["Tm"])
     cond = (gap > 0).values                       # at/below dew point -> condensing
@@ -123,7 +128,7 @@ def summary_chart(series, res, out, margin_c=2.0, history_days=75, days=None):
     lo, hi = ax.get_ylim()
     # gap-filled spans (sensor offline -> station transfer model) as a gray underlay
     if "estimated" in s.columns:
-        est = s["estimated"].astype(bool).values
+        est = s["estimated"].fillna(False).astype(bool).values  # NaN = no data at all
         if est.any():
             ax.fill_between(t, lo, hi, where=est, color=GRAY, alpha=0.20,
                             label="Station-estimated (sensor gap)")

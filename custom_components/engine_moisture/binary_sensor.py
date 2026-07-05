@@ -94,6 +94,7 @@ class SensorStaleBinarySensor(
         data = self.coordinator.data or {}
         return {
             "gap_filled_hours": data.get("gap_filled_hours"),
+            "gap_unfilled_hours": data.get("gap_unfilled_hours"),
             "gapfill_error": data.get("gapfill_error"),
             "last_real_reading": data.get("last_real_reading"),
         }

@@ -186,11 +186,18 @@ def apply_gapfill(g, cfg, now_local, station_df=None):
     conservative +gapfill_rh_margin_pct bump near saturation, where the backtest showed
     the reconstruction reads ~5% low (reports/cowl_station_backtest.md).
 
+    The fill can only reach as far as the station has obs — if the ASOS feed itself
+    went down (or a source was unreachable) the remainder of the gap stays empty.
+    That partial coverage is reported, not hidden: info['unfilled_minutes'] counts the
+    gap minutes no estimate could cover, info['warning'] is set when that exceeds the
+    stale threshold, and info['sources'] carries each source's outcome.
+
     Returns (frame, info). Never raises: on any failure the original frame comes back
     with info['error'] set, so a broken fallback cannot take the monitor down with it.
     station_df: pre-fetched station history (naive-UTC [T, Td, cloud]) for tests/CLI.
     """
-    info = {"filled_minutes": 0, "gaps": [], "stale": False, "error": None, "source": None}
+    info = {"filled_minutes": 0, "unfilled_minutes": 0, "gaps": [], "stale": False,
+            "error": None, "warning": None, "source": None, "sources": {}}
     out = g.copy()
     out["estimated"] = False
     if not len(g) or not cfg.get("gapfill_enabled", True):
@@ -219,10 +226,13 @@ def apply_gapfill(g, cfg, now_local, station_df=None):
 
         spin = pd.Timedelta(hours=float(cfg.get("gapfill_spinup_h", 24)))
         metar = station_df if station_df is not None else gf.fetch_station_history(
-            cfg["airport_icao"], to_utc(gaps[0][0]) - spin, to_utc(gaps[-1][1]))
+            cfg["airport_icao"], to_utc(gaps[0][0]) - spin, to_utc(gaps[-1][1]),
+            status=info["sources"])
         if metar is None or not len(metar):
-            info["error"] = "no station data available for the gap window"
+            info["error"] = ("no station data available for the gap window; sources: "
+                             f"{info['sources']}")
             return out, info
+        info["station_last_ob_utc"] = metar.index.max().isoformat()
 
         syn = gf.synthesize_cowl(metar, params)          # 10-min frame, naive-UTC index
         syn.index = syn.index.tz_localize("UTC").tz_convert(tz).tz_localize(None)
@@ -240,6 +250,15 @@ def apply_gapfill(g, cfg, now_local, station_df=None):
         out = pd.concat([out, fill]).sort_index()
         info["filled_minutes"] = int(len(fill))
         info["source"] = str(cfg["airport_icao"])
+        # honest coverage accounting: a station outage (or a dead source) leaves part
+        # of the gap unfillable — surface that instead of implying a complete fill
+        want = int(sum((e - s).total_seconds() / 60 + 1 for s, e in gaps))
+        info["unfilled_minutes"] = max(0, want - info["filled_minutes"])
+        if info["unfilled_minutes"] > int(cfg.get("gapfill_stale_min", 90)):
+            info["warning"] = (
+                f"station data covered only part of the sensor gap "
+                f"({round(info['unfilled_minutes'] / 60, 1)} h unfilled; last station ob "
+                f"{info.get('station_last_ob_utc')}Z; sources: {info['sources']})")
         return out, info
     except Exception as err:  # noqa: BLE001 - fallback must never kill the cycle
         info["error"] = f"{type(err).__name__}: {err}"
@@ -253,6 +272,10 @@ def gapfill_note(info):
     h = round(info["filled_minutes"] / 60, 1)
     src = info.get("source") or "station"
     tail = " Cowl sensor is currently offline." if info.get("stale") else ""
+    if info.get("warning"):
+        uh = round(info.get("unfilled_minutes", 0) / 60, 1)
+        tail += (f" {uh} h of the outage had no station data either — "
+                 f"exposure there is UNKNOWN, not zero.")
     return (f"⚠️ {h} h estimated from {src} via the hangar transfer fit "
             f"(cowl sensor gap).{tail}")
 

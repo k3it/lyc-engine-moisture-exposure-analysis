@@ -118,6 +118,23 @@ def gapfill_check():
     p = ch.summary_chart(series, res, str(out), history_days=14)
     assert os.path.getsize(p) > 1000
     print(f"  chart with estimated shading: {p}")
+
+    # --- partial coverage: the STATION also goes dark for part of the outage ---
+    # station obs end 12 h before "now": the tail's last 12 h are unfillable and
+    # that must be reported (unfilled_minutes / warning), not silently dropped.
+    metar_cut = metar[metar.index <= metar.index[-1] - pd.Timedelta(hours=12)]
+    part, pinfo = mm.apply_gapfill(holed, cfg, now_local, station_df=metar_cut)
+    print(f"  partial: filled={pinfo['filled_minutes']} unfilled={pinfo['unfilled_minutes']} "
+          f"warning={pinfo['warning'] is not None}")
+    assert pinfo["error"] is None
+    assert pinfo["unfilled_minutes"] >= 11 * 60, "missing station tail not accounted"
+    assert pinfo["warning"], "partial coverage must raise a warning"
+    pnote = mm.gapfill_note(pinfo)
+    assert "UNKNOWN" in pnote, "note must flag the uncovered span"
+    res_p, series_p = mm.run_model(part, cfg)
+    pchart = str(out.parent / "summary_partial.png")
+    ch.summary_chart(series_p, res_p, pchart, history_days=14)
+    print(f"  chart with line break over uncovered span: {pchart}")
     print("  gap-fill fallback OK")
 
 

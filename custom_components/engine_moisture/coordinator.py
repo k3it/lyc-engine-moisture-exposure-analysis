@@ -211,6 +211,8 @@ class EngineMoistureCoordinator(DataUpdateCoordinator):
             _LOGGER.info("sensor gap-fill: %s min synthesized from %s (stale tail: %s)",
                          gap_info["filled_minutes"], gap_info.get("source"),
                          gap_info.get("stale"))
+        if gap_info.get("warning"):
+            _LOGGER.warning("sensor gap-fill: %s", gap_info["warning"])
 
         res, series = pl.run_model(g, cfg)
         last_flight, is_new = pl.reconcile_last_flight(res, series, state.get("last_flight"), cfg)
@@ -240,7 +242,8 @@ class EngineMoistureCoordinator(DataUpdateCoordinator):
             "alert_reason": reason,
             "sensor_stale": bool(gap_info.get("stale")),
             "gap_filled_hours": round(gap_info.get("filled_minutes", 0) / 60, 1),
-            "gapfill_error": gap_info.get("error"),
+            "gap_unfilled_hours": round(gap_info.get("unfilled_minutes", 0) / 60, 1),
+            "gapfill_error": gap_info.get("error") or gap_info.get("warning"),
             "last_real_reading": self._last_real_reading(g),
         }
         # keep res/series for the alert path (same process; not stored on the entity)
