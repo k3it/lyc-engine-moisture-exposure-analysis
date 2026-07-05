@@ -122,6 +122,75 @@ def parse_live_metar_json(js):
     return {"time": r.get("reportTime") or r.get("obsTime"),
             "T": r["temp"], "Td": r["dewp"], "cloud": frac}
 
+def fetch_live_metar_history(station, hours=72, timeout=30):
+    """aviationweather.gov cached METARs for the last `hours` -> DataFrame[T, Td, cloud]
+    on a naive-UTC index (same shape as load_metar_csv). Free/keyless; the API serves
+    roughly the last few days, so this is the fresh-obs source for live gap-fill.
+    Returns None if nothing usable came back."""
+    import urllib.request, json as _json
+    url = (f"https://aviationweather.gov/api/data/metar?ids={station.strip().upper()}"
+           f"&format=json&hours={int(max(1, min(hours, 96)))}")
+    raw = urllib.request.urlopen(url, timeout=timeout).read().decode()
+    js = _json.loads(raw)
+    rows = []
+    for r in (js if isinstance(js, list) else [js]) or []:
+        try:
+            d = parse_live_metar_json(r)
+        except (KeyError, TypeError):
+            continue
+        if d["time"] is None or d["T"] is None or d["Td"] is None:
+            continue
+        ts = (pd.to_datetime(d["time"], unit="s", utc=True)
+              if isinstance(d["time"], (int, float))
+              else pd.to_datetime(d["time"], utc=True))
+        rows.append((ts.tz_convert(None), float(d["T"]), float(d["Td"]), d["cloud"]))
+    if not rows:
+        return None
+    df = pd.DataFrame(rows, columns=["valid", "T", "Td", "cloud"]).set_index("valid")
+    df = df.sort_index()
+    return df[~df.index.duplicated(keep="last")]
+
+def fetch_station_history(station, start_utc, end_utc):
+    """Best-effort station obs [T, Td, cloud] (naive-UTC index) covering
+    [start_utc, end_utc]: the Iowa Mesonet ASOS archive (any span, near-real-time)
+    topped up with the aviationweather.gov live METAR cache for the freshest obs.
+    Returns None if neither source yielded data."""
+    s, e = pd.Timestamp(start_utc), pd.Timestamp(end_utc)
+    frames = []
+    try:
+        frames.append(fetch_metar_archive(station, s, e + pd.Timedelta(days=1)))
+    except MetarDownloadBlocked:
+        pass
+    try:
+        span_h = max(6.0, (e - s).total_seconds() / 3600 + 1)
+        live = fetch_live_metar_history(station, hours=min(96, int(span_h)))
+        if live is not None:
+            frames.append(live)
+    except Exception:
+        pass
+    if not frames:
+        return None
+    df = pd.concat(frames).sort_index()
+    df = df[~df.index.duplicated(keep="last")]
+    if "cloud" in df:
+        df["cloud"] = df["cloud"].fillna(0.0)   # unknown sky -> treat clear (fit convention)
+    df = df.loc[s:e]
+    return df if len(df) else None
+
+def load_transfer_params(path):
+    """Load a fit_transfer()/backtest()['params'] dict saved as JSON (e.g. the repo's
+    data/kmrb_cowl_transfer.json). Returns None if unreadable or incomplete."""
+    import json as _json
+    try:
+        with open(path) as f:
+            p = _json.load(f)
+    except (OSError, ValueError, TypeError):
+        return None
+    if isinstance(p, dict) and "params" in p:      # a full backtest() result also works
+        p = p["params"]
+    need = ("temperature", "moisture", "lat", "lon")
+    return p if isinstance(p, dict) and all(k in p for k in need) else None
+
 # ----------------------------- solar geometry ------------------------------------
 def solar_elevation_deg(idx_utc, lat=KMRB_LAT, lon=KMRB_LON):
     """Approx solar elevation (deg) from UTC time + lat/lon. No external data."""

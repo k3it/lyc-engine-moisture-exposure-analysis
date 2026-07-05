@@ -44,6 +44,8 @@ CONFIG = dict(mm.DEFAULTS, **{
     "timezone": "America/New_York",
     # seed history from the repo's X-Sense exports until the recorder accumulates
     "backfill_csv_glob": str(REPO / "data" / "Engine Thermo-hygrometer_*.csv"),
+    # sensor gap-fill fallback: the repo's saved KMRB station->cowl transfer fit
+    "transfer_params_path": str(REPO / "data" / "kmrb_cowl_transfer.json"),
     "www_dir": tempfile.mkdtemp(prefix="moisture_charts_"),
     "telegram_target": None,   # broadcast to configured chats
 })
@@ -152,6 +154,15 @@ def main():
         sys.exit("No usable history (recorder empty and no backfill).")
     print(f"  model frame: {len(g)} min  {g.index.min()} -> {g.index.max()}")
 
+    # sensor gap-fill fallback (stale/offline cowl feed -> station transfer model)
+    g, gap_info = mm.apply_gapfill(g, cfg, now_local)
+    if gap_info.get("error"):
+        print(f"  ! gap-fill unavailable ({len(gap_info.get('gaps') or [])} gap(s) "
+              f"NOT filled): {gap_info['error']}")
+    elif gap_info.get("filled_minutes"):
+        print(f"  gap-fill: {gap_info['filled_minutes']} min synthesized from "
+              f"{gap_info['source']} (sensor stale: {gap_info['stale']})")
+
     res, series = mm.run_model(g, cfg)
     last_flight, is_new = mm.reconcile_last_flight(res, series, state.get("last_flight"), cfg)
     if is_new:
@@ -202,6 +213,9 @@ def main():
                                       cfg["longitude"], cfg["timezone"],
                                       cfg["forecast_horizon_days"])
         moisture_line = mm.moisture_status_line(res, series, cfg["close_call_margin_c"], nw)
+        note = mm.gapfill_note(gap_info)
+        if note:
+            moisture_line = f"{moisture_line}\n{note}"
         window_line, src = predict_window(client, cfg, weather_info)
         text = mm.assemble_message(moisture_line, window_line)
         print(f"  moisture (deterministic): {moisture_line}")
