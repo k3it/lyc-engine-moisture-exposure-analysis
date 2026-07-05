@@ -135,6 +135,32 @@ def gapfill_check():
     pchart = str(out.parent / "summary_partial.png")
     ch.summary_chart(series_p, res_p, pchart, history_days=14)
     print(f"  chart with line break over uncovered span: {pchart}")
+
+    # --- last-resort backup station: primary dark for the tail, backup has it ---
+    # Reuse metar_cut as the primary (ends 12 h early) and a full-coverage backup that
+    # supplies the span the primary missed. Expect the backup to close most of the gap.
+    cfg_bk = dict(cfg, backup_airport_icao="KXYZ")
+    filled_bk, binfo = mm.apply_gapfill(
+        holed, cfg_bk, now_local, station_df=metar_cut, backup_station_df=metar)
+    print(f"  backup: filled={binfo['filled_minutes']} "
+          f"backup_source={binfo['backup_source']} "
+          f"backup_h={round(binfo['backup_filled_minutes'] / 60, 1)} "
+          f"unfilled={binfo['unfilled_minutes']}")
+    assert binfo["backup_source"] == "KXYZ", "backup station not used"
+    assert binfo["backup_filled_minutes"] >= 10 * 60, "backup filled too little"
+    assert binfo["filled_minutes"] > pinfo["filled_minutes"], \
+        "backup should cover more than primary alone"
+    assert binfo["unfilled_minutes"] < pinfo["unfilled_minutes"], \
+        "backup should reduce the uncovered span"
+    bnote = mm.gapfill_note(binfo)
+    print(f"  note: {bnote}")
+    assert "backup KXYZ" in bnote, "note must credit the backup station"
+    # a configured backup that itself has nothing must not error, just stay partial
+    _, ninfo = mm.apply_gapfill(
+        holed, cfg_bk, now_local, station_df=metar_cut,
+        backup_station_df=metar.iloc[:0])
+    assert ninfo["backup_source"] is None and ninfo["warning"], \
+        "empty backup should leave the primary's partial coverage warning"
     print("  gap-fill fallback OK")
 
 

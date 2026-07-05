@@ -63,6 +63,15 @@ The transfer fit is read from `Gap-fill: station→cowl transfer fit JSON` (blan
 station/hangar, fit your own with `scripts/gapfill.py` (`fit_transfer`/`backtest`) and
 point the option at the saved JSON.
 
+**Backup AWOS (last resort).** If the primary station's own feed is down for part of the
+outage, set `Gap-fill: backup AWOS ICAO` to the nearest station that reliably reports
+(e.g. KHGR for KMRB). Only the spans the primary couldn't cover are retried against that
+one station — its obs stand in for local ambient weather, while the hangar transfer fit
+(lag, greenhouse, solar geometry) is unchanged, so pick a station close enough that its
+weather matches yours. Any span neither station covers stays unfilled and is reported as
+UNKNOWN (not zero). The backup station used shows on the `Cowl sensor offline` entity's
+`gap_backup_station` attribute.
+
 ## Entities
 
 - `sensor.*_cam_wet_hours_since_last_flight` (film hours; attrs: days, realistic/UB

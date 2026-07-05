@@ -63,6 +63,7 @@ OPTION_DEFAULTS = {
     "gapfill_enabled": True,
     "gapfill_stale_min": 90,
     "transfer_params_path": "",
+    "backup_airport_icao": "",
     # weather / message
     "forecast_horizon_days": 7,
     CONF_QUIET_START: 22,
